@@ -34,6 +34,10 @@ func GenerateAgentFragment(agent pivot.AgentDefinition, pivotDir string) (jsonFr
 		fragment["steps"] = steps
 	}
 
+	if effort, ok := openCodeString(agent.Extensions, "reasoningEffort"); ok {
+		fragment["reasoningEffort"] = effort
+	}
+
 	if perms := buildPermissionBlock(agent); len(perms) > 0 {
 		fragment["permission"] = perms
 	}
