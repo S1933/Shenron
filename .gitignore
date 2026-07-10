@@ -1,5 +1,6 @@
 # Binaries
 /agents-sync
+/bin/
 *.exe
 *.dll
 *.so
@@ -26,3 +27,4 @@ Thumbs.db
 
 # Dependencies (vendored)
 vendor/
+.superpowers/
