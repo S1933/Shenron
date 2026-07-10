@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jnuel/agentsync/internal/cli"
 	"github.com/jnuel/agentsync/internal/pivot"
 	"github.com/spf13/cobra"
 )
@@ -20,34 +21,14 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to agentsync.yaml pivot file")
 
 	rootCmd.AddCommand(
-		newDiffCmd(),
-		newPushCmd(),
+		cli.NewDiffCmd(&configPath),
+		cli.NewPushCmd(&configPath),
 		newValidateCmd(),
 		newInitCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
-	}
-}
-
-func newDiffCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "diff",
-		Short: "Show differences between pivot and native configs",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("diff: not yet implemented")
-		},
-	}
-}
-
-func newPushCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "push",
-		Short: "Push pivot config to native CLI configs",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("push: not yet implemented")
-		},
 	}
 }
 
