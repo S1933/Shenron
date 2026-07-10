@@ -11,7 +11,7 @@ type AgentDefinition struct {
 	ID           string         `yaml:"id"`
 	Description  string         `yaml:"description"`
 	Mode         string         `yaml:"mode"` // "primary" | "subagent"
-	Model        string         `yaml:"model,omitempty"`
+	Model        string         `yaml:"model,omitempty"` // fallback, overridden per-provider by extensions.<provider>.model
 	Temperature  *float64       `yaml:"temperature,omitempty"`
 	SystemPrompt string         `yaml:"systemPrompt,omitempty"`
 	PromptFile   string         `yaml:"promptFile,omitempty"`

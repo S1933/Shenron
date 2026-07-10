@@ -22,8 +22,8 @@ func GenerateAgentFragment(agent pivot.AgentDefinition, pivotDir string) (jsonFr
 		fragment["mode"] = "subagent"
 	}
 
-	if agent.Model != "" {
-		fragment["model"] = agent.Model
+	if model := resolveOpenCodeModel(agent); model != "" {
+		fragment["model"] = model
 	}
 
 	if agent.Temperature != nil {
@@ -78,6 +78,31 @@ func extractSteps(extensions map[string]any) any {
 		return nil
 	}
 	return steps
+}
+
+func openCodeString(extensions map[string]any, key string) (string, bool) {
+	if extensions == nil {
+		return "", false
+	}
+	opencode, ok := extensions["opencode"]
+	if !ok {
+		return "", false
+	}
+	opencodeMap, ok := opencode.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	s, ok := opencodeMap[key].(string)
+	return s, ok
+}
+
+// resolveOpenCodeModel returns extensions.opencode.model when set, otherwise falls
+// back to the pivot's scalar model field.
+func resolveOpenCodeModel(agent pivot.AgentDefinition) string {
+	if model, ok := openCodeString(agent.Extensions, "model"); ok {
+		return model
+	}
+	return agent.Model
 }
 
 func extractOpenCodePermissionOverride(extensions map[string]any) map[string]string {

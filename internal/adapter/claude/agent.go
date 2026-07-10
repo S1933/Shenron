@@ -34,7 +34,7 @@ func generateAgentFile(agent pivot.AgentDefinition, pivotDir, baseDir string) (m
 	fm := agentFrontmatter{
 		Name:           agent.ID,
 		Description:    agent.Description,
-		Model:          agent.Model,
+		Model:          resolveModel(agent),
 		Tools:          strings.Join(resolveTools(agent), ", "),
 		PermissionMode: resolvePermissionMode(agent),
 	}
@@ -89,6 +89,15 @@ func resolveTools(agent pivot.AgentDefinition) []string {
 		return tools
 	}
 	return mapTools(agent.Permissions)
+}
+
+// resolveModel returns extensions.claude.model when set, otherwise falls back to
+// the pivot's scalar model field.
+func resolveModel(agent pivot.AgentDefinition) string {
+	if model, ok := claudeString(agent.Extensions, "model"); ok {
+		return model
+	}
+	return agent.Model
 }
 
 // resolvePermissionMode returns extensions.claude.permissionMode when set, otherwise

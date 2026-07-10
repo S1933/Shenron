@@ -32,7 +32,7 @@ func TestInitFromOpenCode(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := cli.RunInit(cli.InitOptions{WorkDir: dir, OpenCodeDir: opencodeDir}); err != nil {
+	if err := cli.RunInit(cli.InitOptions{WorkDir: dir, OpenCodeDir: opencodeDir, ClaudeDir: filepath.Join(dir, "missing-claude")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -46,6 +46,10 @@ func TestInitFromOpenCode(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("output missing %q:\n%s", want, content)
 		}
+	}
+
+	if !strings.Contains(content, "opencode:\n        model: anthropic/claude-sonnet-4-5") {
+		t.Errorf("expected model under extensions.opencode, got:\n%s", content)
 	}
 }
 
@@ -71,6 +75,10 @@ func TestInitFromClaudeCode(t *testing.T) {
 		if !strings.Contains(content, want) {
 			t.Errorf("output missing %q:\n%s", want, content)
 		}
+	}
+
+	if !strings.Contains(content, "claude:\n        model: anthropic/claude-sonnet-4-5") {
+		t.Errorf("expected model under extensions.claude, got:\n%s", content)
 	}
 }
 

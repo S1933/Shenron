@@ -273,6 +273,52 @@ func TestClaudeExtensionOverrides(t *testing.T) {
 	}
 }
 
+func TestModelResolution(t *testing.T) {
+	tests := []struct {
+		name      string
+		agent     pivot.AgentDefinition
+		wantModel string
+	}{
+		{
+			name: "override beats scalar fallback",
+			agent: pivot.AgentDefinition{
+				ID:          "test",
+				Description: "test agent",
+				Mode:        "primary",
+				Model:       "opus",
+				Extensions: map[string]any{
+					"claude":   map[string]any{"model": "claude-model"},
+					"opencode": map[string]any{"model": "opencode-model"},
+				},
+			},
+			wantModel: "claude-model",
+		},
+		{
+			name: "scalar fallback when no override",
+			agent: pivot.AgentDefinition{
+				ID:          "test",
+				Description: "test agent",
+				Mode:        "primary",
+				Model:       "opus",
+			},
+			wantModel: "opus",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files, err := claude.GenerateAgent(tt.agent, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			content := files[filepath.Join(claudeAgentDir(t), "test.md")]
+			if !strings.Contains(content, "model: "+tt.wantModel) {
+				t.Errorf("expected model %q, got:\n%s", tt.wantModel, content)
+			}
+		})
+	}
+}
+
 func TestPromptFile(t *testing.T) {
 	pivotDir := filepath.Join("testdata")
 	agent := pivot.AgentDefinition{

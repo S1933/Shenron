@@ -149,12 +149,26 @@ func bootstrapFromOpenCode(baseDir string) (*pivot.PivotFile, error) {
 	return pf, nil
 }
 
+// ensureOpenCodeExtension returns the agent's extensions.opencode submap, creating
+// it (and the parent extensions map) if absent, so callers can merge keys into it
+// without clobbering values set by earlier callers.
+func ensureOpenCodeExtension(agent *pivot.AgentDefinition) map[string]any {
+	if agent.Extensions == nil {
+		agent.Extensions = map[string]any{}
+	}
+	opencode, ok := agent.Extensions["opencode"].(map[string]any)
+	if !ok {
+		opencode = map[string]any{}
+		agent.Extensions["opencode"] = opencode
+	}
+	return opencode
+}
+
 func openCodeAgentToPivot(id string, fragment map[string]any, baseDir string) (pivot.AgentDefinition, error) {
 	agent := pivot.AgentDefinition{
 		ID:          id,
 		Description: stringValue(fragment["description"]),
 		Mode:        "primary",
-		Model:       stringValue(fragment["model"]),
 	}
 
 	if mode := stringValue(fragment["mode"]); mode != "" {
@@ -178,18 +192,17 @@ func openCodeAgentToPivot(id string, fragment map[string]any, baseDir string) (p
 		agent.Permissions = openCodePermissionsToPivot(perms)
 	}
 
+	if model := stringValue(fragment["model"]); model != "" {
+		ensureOpenCodeExtension(&agent)["model"] = model
+	}
+
 	if steps, ok := fragment["steps"]; ok {
-		agent.Extensions = map[string]any{
-			"opencode": map[string]any{"steps": steps},
-		}
-		if perms, ok := fragment["permission"].(map[string]any); ok {
-			agent.Extensions["opencode"].(map[string]any)["permission"] = openCodePermissionOverride(perms)
-		}
-	} else if perms, ok := fragment["permission"].(map[string]any); ok {
+		ensureOpenCodeExtension(&agent)["steps"] = steps
+	}
+
+	if perms, ok := fragment["permission"].(map[string]any); ok {
 		if override := openCodePermissionOverride(perms); len(override) > 0 {
-			agent.Extensions = map[string]any{
-				"opencode": map[string]any{"permission": override},
-			}
+			ensureOpenCodeExtension(&agent)["permission"] = override
 		}
 	}
 
@@ -336,10 +349,16 @@ func claudeAgentFileToPivot(path string) (pivot.AgentDefinition, error) {
 		ID:           id,
 		Description:  stringValue(fm["description"]),
 		Mode:         "primary",
-		Model:        stringValue(fm["model"]),
 		SystemPrompt: strings.TrimSpace(body),
 		Permissions:  claudeToolsToPermissions(fm),
 	}
+
+	if model := stringValue(fm["model"]); model != "" {
+		agent.Extensions = map[string]any{
+			"claude": map[string]any{"model": model},
+		}
+	}
+
 	return agent, nil
 }
 

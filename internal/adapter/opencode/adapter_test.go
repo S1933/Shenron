@@ -429,6 +429,47 @@ func TestEmptyPermissionOverrideFallsBackToRead(t *testing.T) {
 	}
 }
 
+func TestModelResolution(t *testing.T) {
+	tests := []struct {
+		name      string
+		agent     pivot.AgentDefinition
+		wantModel string
+	}{
+		{
+			name: "override beats scalar fallback",
+			agent: pivot.AgentDefinition{
+				ID:    "test",
+				Model: "opus",
+				Extensions: map[string]any{
+					"claude":   map[string]any{"model": "claude-model"},
+					"opencode": map[string]any{"model": "opencode-model"},
+				},
+			},
+			wantModel: "opencode-model",
+		},
+		{
+			name: "scalar fallback when no override",
+			agent: pivot.AgentDefinition{
+				ID:    "test",
+				Model: "opus",
+			},
+			wantModel: "opus",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fragment, _, _, err := opencode.GenerateAgentFragment(tt.agent, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fragment["model"] != tt.wantModel {
+				t.Errorf("model = %v, want %v", fragment["model"], tt.wantModel)
+			}
+		})
+	}
+}
+
 func TestValidateAgent(t *testing.T) {
 	a := opencode.NewAdapter()
 	err := a.ValidateAgent(pivot.AgentDefinition{ID: "x", Mode: "invalid"})
