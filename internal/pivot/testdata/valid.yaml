@@ -1,0 +1,38 @@
+version: "1"
+agents:
+  - id: build
+    description: "Build agent for CI/CD"
+    mode: primary
+    model: anthropic/claude-sonnet-4-5
+    temperature: 0.7
+    systemPrompt: |
+      You are a build agent.
+    permissions:
+      read: allow
+      edit: ask
+      bash:
+        "go *": allow
+        "npm *": allow
+      webfetch: deny
+    extensions:
+      opencode:
+        steps: 50
+  - id: review
+    description: "Code review sub-agent"
+    mode: subagent
+    promptFile: prompts/review.md
+    permissions:
+      read: allow
+      edit: deny
+commands:
+  - id: ship
+    description: "Ship current changes"
+    template: |
+      Review and ship the current changes.
+    agent: build
+  - id: review-diff
+    description: "Review the current diff"
+    template: |
+      Review the diff and provide feedback.
+skills:
+  - name: test-driven-development
