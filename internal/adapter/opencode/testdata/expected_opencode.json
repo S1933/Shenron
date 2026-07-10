@@ -1,0 +1,38 @@
+{
+  "agent.build": {
+    "description": "Build and deploy agent",
+    "model": "anthropic/claude-sonnet-4-5",
+    "permission": {
+      "bash": {
+        "go *": "allow",
+        "npm *": "allow"
+      },
+      "edit": "ask",
+      "glob": "allow",
+      "grep": "allow",
+      "list": "allow",
+      "lsp": "deny",
+      "webfetch": "deny"
+    },
+    "prompt": "{file:./prompts/build.md}",
+    "steps": 50,
+    "temperature": 0.7
+  },
+  "agent.review": {
+    "description": "Code review sub-agent",
+    "mode": "subagent",
+    "permission": {
+      "edit": "deny",
+      "glob": "allow",
+      "grep": "allow",
+      "list": "allow",
+      "lsp": "allow"
+    },
+    "prompt": "{file:./prompts/review.md}"
+  },
+  "command.ship": {
+    "agent": "build",
+    "description": "Ship current changes",
+    "template": "{file:./command/ship.md}"
+  }
+}
