@@ -1,8 +1,15 @@
 package cli
 
+// This file is the internal sync runtime shared by the package flow. It
+// exists so the package flow has a single point of contact with the pivot
+// parser, the diff engine, and the atomic write primitives. There is no
+// user-facing CLI here; the only exported entry points are programmatic
+// helpers consumed by tests.
+
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,11 +19,44 @@ import (
 	"github.com/S1933/Shenron/internal/diff"
 	"github.com/S1933/Shenron/internal/fsutil"
 	"github.com/S1933/Shenron/internal/pivot"
-	"github.com/spf13/cobra"
 )
 
 // ErrManualEdits indicates push was refused due to manual native edits.
 var ErrManualEdits = errors.New("manual edits detected")
+
+// DiffOptions configures diff for testing and programmatic use.
+type DiffOptions struct {
+	ConfigPath string
+	Target     string
+	Adapters   map[string]adapter.Adapter
+}
+
+// RunDiff shows differences between pivot and native configs.
+func RunDiff(opts DiffOptions) error {
+	return runDiffAt(opts.ConfigPath, opts.Target, opts.Adapters, "")
+}
+
+// CaptureOutput runs fn while capturing stdout.
+func CaptureOutput(fn func() error) (string, error) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	os.Stdout = w
+
+	runErr := fn()
+	if closeErr := w.Close(); closeErr != nil && runErr == nil {
+		runErr = closeErr
+	}
+	os.Stdout = old
+
+	data, readErr := io.ReadAll(r)
+	if readErr != nil && runErr == nil {
+		runErr = readErr
+	}
+	return string(data), runErr
+}
 
 // PushOptions configures push for testing and programmatic use.
 type PushOptions struct {
@@ -28,38 +68,64 @@ type PushOptions struct {
 
 // RunPush pushes pivot config to native CLI configs.
 func RunPush(opts PushOptions) error {
-	return runPush(opts.ConfigPath, opts.Target, opts.Force, opts.Adapters)
-}
-
-// NewPushCmd creates the push subcommand.
-func NewPushCmd(configPath *string) *cobra.Command {
-	var target string
-	var dryRun bool
-	var force bool
-
-	cmd := &cobra.Command{
-		Use:   "push",
-		Short: "Push pivot config to native CLI configs",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if dryRun {
-				return runDiff(*configPath, target, nil)
-			}
-			return runPush(*configPath, target, force, nil)
-		},
-	}
-
-	cmd.Flags().StringVar(&target, "target", "", "limit to a single CLI target (e.g. opencode)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show changes without writing")
-	cmd.Flags().BoolVar(&force, "force", false, "overwrite manually edited native files")
-	return cmd
-}
-
-func runPush(configPath, target string, force bool, adapters map[string]adapter.Adapter) error {
-	return runPushAt(configPath, target, force, adapters, "", nil, nil)
+	return runPushAt(opts.ConfigPath, opts.Target, opts.Force, opts.Adapters, "", nil, nil)
 }
 
 type pushPreflight func(generated map[string]map[string]string, state *diff.StateFile, adapters map[string]adapter.Adapter) error
 type pushPostflight func(generated map[string]map[string]string, state *diff.StateFile) error
+
+// runDiffAt and runPushAt are the library entry points used by both the
+// public Go API and the package flow. They accept an explicit stateDir so the
+// package flow can keep its state under ~/.shenron/packages/state/<name>/.
+
+func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string) error {
+	_, generated, state, resolved, err := prepareSyncAt(configPath, target, adapters, stateDir)
+	if err != nil {
+		return err
+	}
+
+	scope := buildOrphanScope(resolved)
+	colored := diff.SupportsColor()
+	hasChanges := false
+
+	for _, name := range sortedAdapterNames(generated) {
+		files := generated[name]
+		results, err := diff.ComputeDiffs(files, state, scope)
+		if err != nil {
+			return err
+		}
+		results = diff.FilterOrphaned(results)
+
+		if !diff.HasChanges(results) {
+			fmt.Printf("[%s] No changes\n", name)
+			continue
+		}
+
+		hasChanges = true
+		fmt.Printf("[%s]\n", name)
+		fmt.Print(diff.FormatDiff(results, colored))
+	}
+
+	merged := mergeGenerated(generated)
+	allResults, err := diff.ComputeDiffs(merged, state, scope)
+	if err != nil {
+		return err
+	}
+	orphaned := diff.OrphanedOnly(allResults)
+	sort.Slice(orphaned, func(i, j int) bool {
+		return orphaned[i].Path < orphaned[j].Path
+	})
+	for _, r := range orphaned {
+		hasChanges = true
+		fmt.Printf("warning: orphaned %s (removed from pivot, still on disk)\n", r.Path)
+	}
+
+	if !hasChanges {
+		fmt.Println("No changes")
+	}
+
+	return nil
+}
 
 func runPushAt(configPath, target string, force bool, adapters map[string]adapter.Adapter, stateDir string, preflight pushPreflight, postflight pushPostflight) error {
 	pivotDir, generated, state, adapters, err := prepareSyncAt(configPath, target, adapters, stateDir)
@@ -168,10 +234,6 @@ func mergeGenerated(generated map[string]map[string]string) map[string]string {
 		}
 	}
 	return merged
-}
-
-func prepareSync(configPath, target string, adapters map[string]adapter.Adapter) (pivotDir string, generated map[string]map[string]string, state *diff.StateFile, resolved map[string]adapter.Adapter, err error) {
-	return prepareSyncAt(configPath, target, adapters, "")
 }
 
 func prepareSyncAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string) (pivotDir string, generated map[string]map[string]string, state *diff.StateFile, resolved map[string]adapter.Adapter, err error) {
