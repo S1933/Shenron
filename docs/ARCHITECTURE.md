@@ -49,7 +49,7 @@ flowchart LR
 
 The application accesses local files for the package store and the native
 configs. The only network call is `git clone` against public HTTPS remotes
-during `package install` or `package update`. There are no daemons, plugin
+during `shenron install` or `shenron update`. There are no daemons, plugin
 loaders, or remote persistence layers.
 
 ## Module map
@@ -115,22 +115,25 @@ field decoding.
 
 ## Synchronization pipeline
 
-`diff`, `push`, and `push --dry-run` share the preparation path in
-`internal/cli`:
+`diff <name>` and `push <name>` share the preparation path in
+`internal/cli`. Every command operates on a package snapshot under
+`~/.shenron/packages/<name>/<active-digest>/`, with state under
+`~/.shenron/state/<name>/`:
 
 ```mermaid
 sequenceDiagram
     participant U as User
     participant C as CLI orchestrator
+    participant S as Package store
     participant P as Pivot module
     participant A as Target adapters
     participant D as Diff/state module
     participant F as Filesystem
 
-    U->>C: diff or push
-    C->>P: Discover(config flag or current directory)
-    P-->>C: pivot path
-    C->>F: Read shenron.yaml
+    U->>C: diff <name> or push <name>
+    C->>S: Load(name)
+    S-->>C: snapshot root + manifest
+    C->>F: Read shenron.yaml from snapshot
     C->>P: Parse and validate
     P-->>C: PivotFile
     C->>A: Generate agents and commands
@@ -138,7 +141,7 @@ sequenceDiagram
     A-->>C: target -> path -> desired content
     C->>D: Load .shenron-state.json
     C->>D: Compare desired content, disk, and prior hashes
-    alt diff / dry run
+    alt diff
         D-->>U: changes, warnings, unified diff
     else push with safe changes
         C->>F: Atomically replace changed files
@@ -151,7 +154,7 @@ sequenceDiagram
 
 ### Discovery
 
-There is no global pivot lookup. Each `package install` argument is either a
+There is no global pivot lookup. Each `shenron install` argument is either a
 local directory path or a `https://` Git URL with an immutable `--ref`
 (tag or full commit SHA). The store path under
 `~/.shenron/packages/packages/<name>/<digest>/` is content-addressed; the
@@ -260,11 +263,11 @@ not represented as native enforcement.
 
 | Command | Read path | Write path | Important behavior |
 |---|---|---|---|
-| `init` | First usable OpenCode config, then Claude config, then Codex config | New `./shenron.yaml` | Refuses to overwrite an existing pivot |
-| `validate` | Discovered pivot and referenced prompt files | None | Runs pivot validation only |
-| `diff` | Pivot, native files, state | None | Reports per-target changes and orphans |
-| `push --dry-run` | Same as `diff` | None | Delegates to the diff path |
-| `push` | Pivot, native files, state | Native files and state | Refuses manual overwrites unless forced |
+| `install <source>` | Local directory or public HTTPS Git source | `~/.shenron/packages/<name>/<digest>/` and package index | Refuses branches, `HEAD`, SSH, and archive URLs for HTTPS sources; refuses missing `--ref` |
+| `list` | Package index | None | TSV output ordered by name; prints `No packages installed` when empty |
+| `update <name>` | Installed package, optional new source/ref | New snapshot + active record | Stages and validates before swapping; old snapshots retained |
+| `diff <name>` | Installed package, state, native files | None | Surfaces permission grants and missing required/optional skills |
+| `push <name>` | Installed package, state, native files | Native files and state | Requires `--allow-permissions` on first approval; refuses manual overwrites unless `--force`; refuses foreign collisions |
 
 ## Testing architecture
 

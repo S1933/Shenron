@@ -16,7 +16,7 @@ native changes, then writes the corresponding Claude Code, Codex, and OpenCode f
 | Slash commands | `~/.claude/commands/<id>.md` | `~/.codex/prompts/<id>.md` | `command.<id>` plus `command/<id>.md` |
 | Permissions | `tools` and `permissionMode` | Sandbox, approvals, and web search | Native `permission` object |
 | Per-agent skills | YAML frontmatter `skills` | Instruction hint | Native JSON `skills` array |
-| Bootstrap with `init` | After OpenCode | After Claude Code | Preferred import source |
+| Bootstrap with `shenron install` | After OpenCode | After Claude Code | Preferred import source |
 
 Shenron targets Claude Code, Codex, and OpenCode.
 
@@ -38,62 +38,58 @@ go build -o shenron ./cmd/shenron
 
 ## Quick start
 
+Shenron manages installed configuration packages. Every command operates on
+a package in the store (`~/.shenron/packages/` by default); there is no
+single-pivot mode.
+
 ```bash
-# Import the first available native configuration into ./shenron.yaml.
-# OpenCode is tried first, then Claude Code, then Codex.
-./shenron init
+# Install a local package directory.
+./shenron install ./my-package
 
-# Edit the pivot and validate it.
-./shenron validate
+# See what is installed.
+./shenron list
 
-# Preview all native changes without writing.
-./shenron diff
+# Preview the package's native changes without writing.
+./shenron diff my-package
 
 # Push to every supported target.
-./shenron push
+./shenron push my-package
 ```
 
 To work with one target only:
 
 ```bash
-./shenron diff --target opencode
-./shenron push --target claude-code
+./shenron diff my-package --target opencode
+./shenron push my-package --target claude-code
 ```
 
-After a successful push, running `diff` again reports `No changes` for each
-synchronized target.
+The first time a revision declares permission grants, `push` requires
+`--allow-permissions`. After a successful push, running `diff` again
+reports `No changes` for each synchronized target.
 
 ## Commands and flags
 
 | Command | Behavior |
 |---|---|
-| `init` | Creates `./shenron.yaml` from the first usable native config. Refuses to overwrite an existing pivot. |
-| `validate` | Parses the pivot and checks schema rules, identifiers, permissions, references, and prompt files. |
-| `diff` | Shows created, modified, manually modified, and orphaned native files without writing. |
-| `push` | Generates and atomically writes native files, then updates `.shenron-state.json`. |
-| `package install <source>` | Install a local directory or a public HTTPS Git package. |
-| `package list` | List installed packages, ordered by name. |
-| `package update <name>` | Validate and replace an installed snapshot from a new source or ref. |
-| `package diff <name>` | Show a package's native diff plus its permission grants and missing skills. |
-| `package push <name>` | Generate and atomically write a package's native files, then update its state. |
+| `shenron install <source>` | Install a local directory or a public HTTPS Git package. |
+| `shenron list` | List installed packages, ordered by name. |
+| `shenron update <name>` | Validate and replace an installed snapshot from a new source or ref. |
+| `shenron diff <name>` | Show a package's native diff plus its permission grants and missing skills. |
+| `shenron push <name>` | Generate and atomically write a package's native files, then update its state. |
 
 Common flags:
 
-- `-c, --config <path>` selects an explicit pivot file.
+- `--store <path>` (root, persistent) selects a custom package cache
+  directory (default `~/.shenron/packages`).
+- `install --ref <tag-or-sha>` pins the Git revision for HTTPS sources.
+- `update --source <dir-or-url>` and `update --ref <tag-or-sha>` replace the
+  installed package's source and revision.
 - `diff --target <name>` and `push --target <name>` select `claude-code`,
   `codex`, or `opencode`.
-- `push --dry-run` is equivalent to `diff`.
 - `push --force` overwrites native files that changed after the last push.
-- `package --store <path>` selects a custom package cache directory (default
-  `~/.shenron/packages`).
-- `package install --ref <tag-or-sha>` pins the Git revision for HTTPS sources.
-- `package push --allow-permissions` approves the package revision's declared
+- `push --allow-permissions` approves the package revision's declared
   permission grants; the approval is bound to the installed revision and its
   permission digest.
-
-Without `--config`, Shenron searches for `shenron.yaml` from the current
-directory upward to the filesystem root. If none is found, it tries
-`~/.shenron/shenron.yaml`.
 
 ## Pivot file
 
@@ -226,20 +222,12 @@ permissions have no equivalent per-agent Codex enforcement. Use
 explicit native override. Codex receives each agent skill list as an
 instruction hint; Shenron does not resolve local skill paths or install skills.
 
-## Bootstrap and round-trip behavior
+## Getting started
 
-`shenron init` writes a new pivot in the current directory:
-
-1. It tries `~/.config/opencode/opencode.json`.
-2. If OpenCode is missing or unusable, it tries `~/.claude/agents` and
-   `~/.claude/commands`.
-3. If Claude Code is unavailable, it tries `~/.codex/agents` and
-   `~/.codex/prompts`.
-4. It imports supported agents, commands, prompts, permissions, model
-   overrides, and per-agent skills.
-
-Bootstrap is intentionally selective. Native fields without a pivot equivalent
-are ignored, except for supported values preserved under `extensions`.
+Shenron ships its configuration as a directory containing a manifest and a
+pivot. Hand-write one or import the first usable native config you already
+have, then install it with `shenron install`. There is no `shenron init` —
+every command operates on an installed package.
 
 ## Configuration packages
 
@@ -264,10 +252,10 @@ matching `^[a-z][a-z0-9-]*$`, a strict semver `version`, a non-empty
 
 ```bash
 # Local directory
-./shenron package install ./my-package
+./shenron install ./my-package
 
 # Public Git repository (HTTPS only, immutable tag or full commit SHA)
-./shenron package install https://github.com/acme/reviewers.git --ref 1.2.0
+./shenron install https://github.com/acme/reviewers.git --ref 1.2.0
 ```
 
 The first install copies the source into a content-addressed snapshot under
@@ -278,8 +266,8 @@ revalidated before every load, so a corrupted cache can never be pushed.
 ### List and update
 
 ```bash
-./shenron package list                       # name, version, source, revision
-./shenron package update acme-reviewers \
+./shenron list                                # name, version, source, revision
+./shenron update acme-reviewers \
     --source https://github.com/acme/reviewers.git --ref 1.3.0
 ```
 
@@ -289,15 +277,16 @@ record. Old snapshots are retained.
 ### Diff and push
 
 ```bash
-./shenron package diff acme-reviewers                # preview without writing
-./shenron package push acme-reviewers --allow-permissions
+./shenron diff acme-reviewers                 # preview without writing
+./shenron push acme-reviewers --allow-permissions
 ```
 
-`package diff` reports the same created / modified / manually-modified /
-orphaned status as `diff`, and additionally surfaces the package's declared
-permission grants plus any required or optional skills missing on disk.
+`diff` reports the same created / modified / manually-modified / orphaned
+status the package flow has always reported, and additionally surfaces the
+package's declared permission grants plus any required or optional skills
+missing on disk.
 
-`package push` requires explicit approval the first time a revision declares
+`push` requires explicit approval the first time a revision declares
 permission grants. The approval is bound to both the package revision and the
 SHA-256 digest of the normalized grant list (`state/<name>/permissions.json`),
 so a new revision with changed grants must be approved again. Missing required
@@ -305,9 +294,9 @@ skills abort the push; missing optional skills emit a warning and continue.
 
 Packages also refuse to take over native resources they do not already own.
 If a generated path (or a managed nested entry inside `opencode.json`) exists
-on disk without being tracked in the package's own state file, `package push`
-returns `ErrPackageCollision` and aborts. `package push --force` overwrites
-manually edited package-owned files.
+on disk without being tracked in the package's own state file, `push` returns
+`ErrPackageCollision` and aborts. `push --force` overwrites manually edited
+package-owned files.
 
 State for a package lives at `~/.shenron/state/<name>/.shenron-state.json`,
 kept outside the immutable snapshot so it survives revisions.
@@ -361,7 +350,7 @@ use `push --force` deliberately.
 ```text
 cmd/shenron/       Cobra entry point
 internal/
-  cli/                 init, validate, diff, push, package subcommands, registry, orchestration
+  cli/                 install, list, update, diff, push commands, registry, orchestration
   pivot/               YAML schema, discovery, parsing, validation
   package/             shenron-package.yaml manifest, immutable snapshots, Git and local install
   adapter/
@@ -413,8 +402,10 @@ The test suite contains:
 - adapter mapping and golden-file tests;
 - ordered OpenCode merge and preservation tests;
 - CLI bootstrap, diff, push, force, and orphan-scope tests;
-- package install, list, update, diff, push, permissions, skills, and
-  foreign-collision tests;
+- cobra-driven surface tests for the five top-level commands
+  (`commands_test.go`);
+- install, list, update, diff, push, permissions, skills, and
+  foreign-collision tests against the package store;
 - atomic-write and state-file tests;
 - end-to-end round-trip tests for all three targets, including per-agent skills.
 

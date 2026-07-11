@@ -1,6 +1,6 @@
 # Agent skill bindings
 
-`shenron.yaml` is the source of truth for skill metadata. `shenron push`
+`shenron.yaml` is the source of truth for skill metadata. `shenron push <name>`
 emits each binding to both the Claude Code agent frontmatter and the OpenCode
 agent object.
 
