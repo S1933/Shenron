@@ -15,10 +15,14 @@ const stateFileName = ".agentsync-state.json"
 const stateVersion = "1"
 
 // FileState records the hash of content written by the last successful push.
+// Managed lists, per nested container (e.g. "agent"/"command"), the leaf keys
+// agentsync wrote into a merged config file. It lets a later push prune entries
+// that left the pivot without touching native entries agentsync never owned.
 type FileState struct {
-	Hash    string `json:"hash"`
-	Path    string `json:"path"`
-	Adapter string `json:"adapter,omitempty"`
+	Hash    string              `json:"hash"`
+	Path    string              `json:"path"`
+	Adapter string              `json:"adapter,omitempty"`
+	Managed map[string][]string `json:"managed,omitempty"`
 }
 
 // StateFile tracks pushed file hashes for manual edit detection.
@@ -92,6 +96,26 @@ func (s *StateFile) SetFile(path, adapter string, content []byte) {
 		Hash:    HashContent(content),
 		Adapter: adapter,
 	}
+}
+
+// SetManaged records the managed leaf keys for a merged config file, preserving
+// the existing hash entry for that path.
+func (s *StateFile) SetManaged(path string, managed map[string][]string) {
+	if s.Files == nil {
+		s.Files = make(map[string]FileState)
+	}
+	fs := s.Files[path]
+	fs.Path = path
+	fs.Managed = managed
+	s.Files[path] = fs
+}
+
+// Managed returns the managed leaf keys recorded for path, or nil if none.
+func (s *StateFile) Managed(path string) map[string][]string {
+	if s == nil || s.Files == nil {
+		return nil
+	}
+	return s.Files[path].Managed
 }
 
 func emptyState() *StateFile {
