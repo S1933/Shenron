@@ -1,178 +1,323 @@
 # AgentSync
 
-Sync agent configurations across AI coding assistants from a single source of truth.
+AgentSync keeps agent configurations aligned across AI coding assistants from
+one CLI-agnostic source of truth.
 
-AgentSync lets you define your agents, slash-commands, and their prompts **once** in a
-CLI-agnostic pivot file (`agentsync.yaml`) and generate the native configuration for each
-assistant. Edit one file, run `push`, and every tool stays in sync.
+Define agents, prompts, slash commands, permissions, and per-agent skill
+bindings once in `agentsync.yaml`. AgentSync validates that pivot, previews the
+native changes, then writes the corresponding Claude Code and OpenCode files.
 
-## Supported targets
+## What it supports
 
-| Target | Identifier | Config location | Layout |
-|---|---|---|---|
-| Claude Code | `claude-code` | `~/.claude/` | one Markdown file per agent/command (`agents/*.md`, `commands/*.md`) |
-| OpenCode | `opencode` | `~/.config/opencode/` | single `opencode.json` + `prompts/*.md` and `command/*.md` |
+| Capability | Claude Code | OpenCode |
+|---|---|---|
+| Agents | `~/.claude/agents/<id>.md` | `agent.<id>` in `~/.config/opencode/opencode.json` |
+| Agent prompts | Markdown body | `prompts/<id>.md` referenced from JSON |
+| Slash commands | `~/.claude/commands/<id>.md` | `command.<id>` plus `command/<id>.md` |
+| Permissions | `tools` and `permissionMode` | Native `permission` object |
+| Per-agent skills | YAML frontmatter `skills` | Native JSON `skills` array |
+| Bootstrap with `init` | Imported when OpenCode is unavailable | Preferred import source |
 
-## Why
-
-Each assistant stores agent definitions in its own format — Claude Code uses Markdown
-files with YAML frontmatter, OpenCode uses a nested JSON config plus external prompt
-files. Keeping the same set of agents consistent across both by hand is tedious and
-error-prone. AgentSync makes the pivot file authoritative and does the translation.
+AgentSync currently targets Claude Code and OpenCode. The adapter boundary is
+designed for adding more targets, but no Codex adapter is included yet.
 
 ## Install
 
-Requires Go 1.24+.
+AgentSync requires Go 1.24 or newer.
 
 ```bash
 git clone git@github.com:S1933/AgentSync.git
 cd AgentSync
-make build          # produces ./agents-sync
-# or: go build -o agents-sync ./cmd/agents-sync
+make build
+```
+
+This produces `./agents-sync`. You can also build it directly:
+
+```bash
+go build -o agents-sync ./cmd/agents-sync
 ```
 
 ## Quick start
 
 ```bash
-# 1. Bootstrap a pivot file from your existing native configs
+# Import the first available native configuration into ./agentsync.yaml.
+# OpenCode is tried first, then Claude Code.
 ./agents-sync init
 
-# 2. Edit agentsync.yaml to taste, then check it
+# Edit the pivot and validate it.
 ./agents-sync validate
 
-# 3. Preview what would change
-./agents-sync push --dry-run
+# Preview all native changes without writing.
+./agents-sync diff
 
-# 4. Propagate to the native configs
+# Push to every supported target.
 ./agents-sync push
 ```
 
-The pivot file is discovered automatically by walking up from the current directory, or
-pointed at explicitly with `-c/--config <path>`.
+To work with one target only:
 
-## Commands
+```bash
+./agents-sync diff --target opencode
+./agents-sync push --target claude-code
+```
 
-| Command | Description |
+After a successful push, running `diff` again reports `No changes` for each
+synchronized target.
+
+## Commands and flags
+
+| Command | Behavior |
 |---|---|
-| `init` | Generate a skeleton `agentsync.yaml` from existing native configs. Refuses to overwrite an existing pivot. |
-| `validate` | Validate the pivot file (schema, agent ids, modes). |
-| `diff` | Show the differences between the pivot and the native configs. |
-| `push` | Write the pivot config out to the native CLIs. |
+| `init` | Creates `./agentsync.yaml` from the first usable native config. Refuses to overwrite an existing pivot. |
+| `validate` | Parses the pivot and checks schema rules, identifiers, permissions, references, and prompt files. |
+| `diff` | Shows created, modified, manually modified, and orphaned native files without writing. |
+| `push` | Generates and atomically writes native files, then updates `.agentsync-state.json`. |
 
-### Flags
+Common flags:
 
-- `-c, --config <path>` *(global)* — path to `agentsync.yaml` (otherwise auto-discovered).
-- `push --dry-run` — show changes without writing (equivalent to `diff`).
-- `push --target <name>` / `diff --target <name>` — limit to a single target (`claude-code` or `opencode`).
-- `push --force` — overwrite native files that were edited by hand since the last push.
+- `-c, --config <path>` selects an explicit pivot file.
+- `diff --target <name>` and `push --target <name>` select `claude-code` or
+  `opencode`.
+- `push --dry-run` is equivalent to `diff`.
+- `push --force` overwrites native files that changed after the last push.
+
+Without `--config`, AgentSync searches for `agentsync.yaml` from the current
+directory upward to the filesystem root. If none is found, it tries
+`~/.agentsync/agentsync.yaml`.
 
 ## Pivot file
 
-`agentsync.yaml` is the single source of truth.
+The pivot is intentionally smaller than either native format. Shared concepts
+stay portable; target-specific features live under `extensions`.
 
 ```yaml
 version: "1"
 
 agents:
-  - id: ask                       # required, lowercase kebab-case
-    description: Read-only Q&A and feature framing.
+  - id: build
+    description: Implements approved changes.
     mode: primary                 # primary | subagent
-    model: opus                   # optional; passed through per target
-    temperature: 0.2              # optional
-    systemPrompt: |-              # inline prompt…
-      You are **ask**, a read-only Q&A agent.
-    # promptFile: prompts/ask.md  # …or reference an external file (relative to the pivot)
-    permissions:                  # optional, CLI-agnostic capability grants
+    model: sonnet                 # optional shared fallback
+    temperature: 0.2             # optional, 0.0 through 2.0
+    systemPrompt: |-
+      You are the build agent.
+    # promptFile: prompts/build.md  # alternative to systemPrompt
+
+    skills:                       # emitted to both native agent formats
+      - test-driven-development
+      - verification-before-completion
+
+    permissions:
       read: allow                 # allow | ask | deny
       edit: ask
-      bash:                       # a string (allow/ask/deny) or a pattern map
+      bash:                       # enum or command-pattern map
         "go *": allow
         "rm *": deny
       webfetch: deny
       websearch: ask
-      tasks:                      # per-subagent delegation grants
-        build: allow
-    extensions:                   # per-target escape hatch (see below)
+      tasks:
+        review: allow
+
+    extensions:
       claude:
+        model: opus               # overrides the shared model for Claude
         tools: [Read, Glob, Grep, Bash]
+        permissionMode: default
       opencode:
-        steps: 20
+        model: anthropic/claude-sonnet-4-5
+        steps: 40
+        reasoningEffort: high
+        permission:
+          glob: allow
+          grep: allow
+          list: allow
+          lsp: deny
 
 commands:
   - id: ship
     description: Ship the current changes.
     template: |-
       Review and ship the current changes.
-    agent: build                  # optional default agent (opencode)
-    model: opus                   # optional
+    agent: build
+    model: sonnet
 
+# Optional global skill references retained by the pivot schema.
+# AgentSync does not install, copy, or emit their content.
 skills:
   - name: test-driven-development
 ```
 
-### Permissions → native mapping
+### Agent fields
 
-Permissions are declared once and translated per target:
+| Field | Rules and behavior |
+|---|---|
+| `id` | Required, unique, and matched by `^[a-z][a-z0-9-]*$`. |
+| `description` | Required; maximum 1024 characters. |
+| `mode` | Required: `primary` or `subagent`. |
+| `model` | Optional fallback used when the target-specific model is absent. |
+| `temperature` | Optional number from `0.0` to `2.0`. |
+| `systemPrompt` / `promptFile` | Mutually exclusive. `promptFile` is relative to the pivot directory and must exist. |
+| `permissions` | Portable grants translated by each adapter. |
+| `extensions` | Target-specific overrides and fields. |
+| `skills` | Optional ordered list of kebab-case skill names, emitted as native agent metadata. Local skill existence is not required. |
 
-- **Claude Code** derives the `tools:` list from the grants (`read → Read`, `bash → Bash`,
-  `webfetch → WebFetch`, `websearch → WebSearch`, `tasks → Task`) and maps `edit` to a
-  `permissionMode` (`allow → acceptEdits`, `deny → plan`, `ask`/unset → default/omitted).
-- **OpenCode** emits a `permission` block (`read` expands to `glob`/`grep`/`list`/`lsp`,
-  plus `edit`/`bash`/`webfetch`/`websearch`/`task`).
+### Per-agent skills and global skill references
 
-### Extensions
+These two fields have different purposes:
 
-`extensions` carries target-specific settings the pivot schema doesn't model directly:
+- `agents[].skills` binds skills to an agent. It round-trips through OpenCode's
+  JSON `skills` array and Claude Code's frontmatter `skills` list.
+- Top-level `skills: [{name: ...}]` stores global references only. AgentSync
+  does not manage skill contents or install skills on another machine.
 
-- `extensions.claude.tools` — explicit Claude tools list (overrides the derived one).
-- `extensions.claude.permissionMode` — explicit Claude permission mode.
-- `extensions.opencode.steps` — OpenCode step budget.
-- `extensions.opencode.permission` — OpenCode read-sub permission overrides.
+The repository's current dogfood bindings are documented in
+[`docs/SKILLS.md`](docs/SKILLS.md).
 
-## How sync works
+### Model resolution
 
-1. **Generate** — each adapter renders the pivot agents/commands into its native files
-   (Claude: standalone `.md` files; OpenCode: JSON fragments + prompt/command files).
-2. **Diff** — generated output is compared against what's on disk and against the last
-   push recorded in `.agentsync-state.json`.
-3. **Write** — `push` writes changed files atomically and updates the state file.
+For agents, each adapter first looks for its target-specific override:
 
-**OpenCode merge is non-destructive and order-preserving.** Pivot agents/commands are
-upserted into the nested `agent`/`command` objects of your existing `opencode.json`;
-native-only entries and unrelated top-level keys are preserved verbatim, and the file's
-key order is kept so pushes produce minimal diffs. Pushes are idempotent — running
-`push` twice in a row is a no-op.
+1. `extensions.claude.model` or `extensions.opencode.model`
+2. the shared `model` field
+3. the target's own default when neither is set
 
-**Upsert-only.** Removing an agent from the pivot does **not** delete it from
-`opencode.json`; managed entries are only created/updated, never removed. Remove
-stale native entries by hand if you want them gone.
+This lets one pivot select different providers or model aliases without
+forcing target-specific names into the shared field.
 
-**Manual-edit protection.** If a native file was changed since AgentSync last wrote it,
-`push` refuses to clobber it and lists the affected paths. Use `--force` to override.
+### Permissions
 
-## Project layout
+Claude Code derives:
 
-```
-cmd/agents-sync/        CLI entry point
+- `read: allow` → `Read`
+- any allowed bash rule → `Bash`
+- `webfetch: allow` → `WebFetch`
+- `websearch: allow` → `WebSearch`
+- any allowed task → `Task`
+- `edit: allow | ask | deny` → `acceptEdits | default | plan`
+
+`extensions.claude.tools` and `extensions.claude.permissionMode` override those
+derived values.
+
+OpenCode emits `edit`, `bash`, `webfetch`, `websearch`, and `task` directly in
+its `permission` object. A shared `read` value expands to `glob`, `grep`,
+`list`, and `lsp`; `extensions.opencode.permission` can override those four
+sub-permissions individually.
+
+## Bootstrap and round-trip behavior
+
+`agents-sync init` writes a new pivot in the current directory:
+
+1. It tries `~/.config/opencode/opencode.json`.
+2. If OpenCode is missing or unusable, it tries `~/.claude/agents` and
+   `~/.claude/commands`.
+3. It imports supported agents, commands, prompts, permissions, model
+   overrides, and per-agent skills.
+
+Bootstrap is intentionally selective. Native fields without a pivot equivalent
+are ignored, except for supported values preserved under `extensions`.
+
+## Synchronization and safety
+
+The sync pipeline is:
+
+1. Discover, parse, and validate the pivot.
+2. Generate each target's files in memory.
+3. Merge OpenCode agent and command fragments into the existing JSON.
+4. Compare generated content with disk and `.agentsync-state.json`.
+5. Write changed files atomically and record their hashes.
+
+### OpenCode merge policy
+
+AgentSync upserts pivot agents and commands into the nested `agent` and
+`command` objects. Native-only entries and unrelated top-level fields are
+preserved, and existing key order is retained where possible. The JSON document
+is parsed and serialized again, so byte-for-byte formatting is not guaranteed.
+
+The merge is deliberately upsert-only. Removing an agent or command from the
+pivot does not delete its nested OpenCode entry; remove stale JSON entries by
+hand. Standalone managed files that are no longer generated can be reported as
+orphaned, but AgentSync still leaves deletion to you.
+
+### Manual-edit protection
+
+`.agentsync-state.json`, stored beside the pivot, records the hash of every file
+written by a successful push. If a managed native file later differs from both
+that state and the newly generated output, AgentSync marks it as manually
+modified and refuses to overwrite it. Review the diff, reconcile the change, or
+use `push --force` deliberately.
+
+## Current limitations
+
+- Only Claude Code and OpenCode adapters are registered.
+- Sync is pivot-to-native; there is no automatic native-to-pivot merge after
+  initialization.
+- Native entries removed from the pivot are warned about, not deleted.
+- Skill bindings are metadata only; skill directories and `SKILL.md` contents
+  are outside AgentSync's management scope.
+- Skill-name validation checks kebab-case syntax, not local filesystem
+  availability.
+- OpenCode JSON is structurally preserved, not guaranteed byte-identical.
+
+## Architecture for contributors
+
+```text
+cmd/agents-sync/       Cobra entry point
 internal/
-  cli/                  commands (init, validate, diff, push), target registry
-  pivot/                pivot schema, parsing, discovery
+  cli/                 init, validate, diff, push, registry, orchestration
+  pivot/               YAML schema, discovery, parsing, validation
   adapter/
-    claude/             Claude Code adapter (Markdown + frontmatter)
-    opencode/           OpenCode adapter (nested JSON merge, ordered.go)
-  diff/                 diff engine + push state tracking
-  fsutil/               path resolution, atomic writes
-testdata/               fixtures and golden files
-docs/                   design notes
+    claude/            Markdown/frontmatter and command-file generation
+    opencode/          JSON fragments, ordered merge, prompt/command files
+  diff/                status calculation, unified diffs, state hashes
+  fsutil/              target paths and atomic file replacement
+testdata/              end-to-end fixtures
+docs/                  PRD, plans, and skill-binding matrix
 ```
 
-## Development
+The core consumes the `adapter.Adapter` interface:
+
+```go
+type Adapter interface {
+    Name() string
+    ValidateAgent(pivot.AgentDefinition) error
+    GenerateAgent(pivot.AgentDefinition) (map[string]string, error)
+    GenerateCommand(pivot.CommandDefinition) (map[string]string, error)
+    TargetPaths() []string
+    MergeFile(path string, existing []byte, fragments map[string]any) ([]byte, error)
+}
+```
+
+OpenCode additionally exposes an internal fragment accumulator so orchestration
+can merge all generated agent and command fragments into one `opencode.json`.
+Claude Code generates independent files and returns no merged file.
+
+To add a target:
+
+1. Implement the adapter interface in `internal/adapter/<target>`.
+2. Keep target-specific translation inside that package.
+3. Register the adapter in `internal/cli/registry.go`.
+4. Add mapping tests, golden fixtures, and end-to-end coverage.
+
+## Testing and development
 
 ```bash
-make test     # go test ./...
-make lint     # golangci-lint run
-make build    # go build -o agents-sync ./cmd/agents-sync
+make test      # go test ./...
+make lint      # golangci-lint run
+make build     # go build -o agents-sync ./cmd/agents-sync
+make clean     # remove the local binary
 ```
 
-The pivot file at the repo root (`agentsync.yaml`) and the push state
-(`.agentsync-state.json`) are per-user and gitignored.
+The test suite contains:
+
+- pivot parsing, validation, and discovery tests;
+- adapter mapping and golden-file tests;
+- ordered OpenCode merge and preservation tests;
+- CLI bootstrap, diff, push, force, and orphan-scope tests;
+- atomic-write and state-file tests;
+- end-to-end round-trip tests for both targets, including per-agent skills.
+
+The root `agentsync.yaml`, generated `agents-sync` binary, and
+`.agentsync-state.json` are local dogfood artifacts and are gitignored.
+
+For the detailed product contract, see
+[`docs/prd/agentsync.md`](docs/prd/agentsync.md).
