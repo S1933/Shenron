@@ -1,5 +1,9 @@
 # Shenron
 
+<p align="center">
+  <img src="docs/images/shenron.jpg" alt="Shenron — the configuration dragon" width="600">
+</p>
+
 Shenron keeps agent configurations aligned across AI coding assistants from
 one CLI-agnostic source of truth.
 
