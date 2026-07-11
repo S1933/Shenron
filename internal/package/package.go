@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/S1933/Shenron/internal/fsutil"
 	"github.com/S1933/Shenron/internal/pivot"
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -62,6 +65,8 @@ type InstalledPackage struct {
 	Version     string `json:"version"`
 	Description string `json:"description"`
 	Source      string `json:"source"`
+	Ref         string `json:"ref,omitempty"`
+	Revision    string `json:"revision"`
 	Root        string `json:"root"`
 	Digest      string `json:"digest"`
 }
@@ -285,10 +290,7 @@ func (s *Store) InstallLocal(source string) (*InstalledPackage, error) {
 		return nil, err
 	}
 
-	installed := InstalledPackage{
-		Name: staged.pkg.Manifest.Name, Version: staged.pkg.Manifest.Version, Description: staged.pkg.Manifest.Description,
-		Source: staged.source, Root: target, Digest: staged.digest,
-	}
+	installed := staged.installed(target)
 	index.Packages = append(index.Packages, installed)
 	sort.Slice(index.Packages, func(i, j int) bool { return index.Packages[i].Name < index.Packages[j].Name })
 	if err := s.writeIndex(index); err != nil {
@@ -297,12 +299,36 @@ func (s *Store) InstallLocal(source string) (*InstalledPackage, error) {
 	return &installed, nil
 }
 
+// Install chooses a local-directory or public HTTPS Git installation based on
+// source. A ref is accepted only for Git sources.
+func (s *Store) Install(source, ref string) (*InstalledPackage, error) {
+	if isHTTPSURL(source) {
+		return s.InstallGit(source, ref)
+	}
+	if isNonHTTPSRemote(source) {
+		return nil, fmt.Errorf("package Git source must be a public HTTPS URL")
+	}
+	if ref != "" {
+		return nil, fmt.Errorf("--ref is only supported for public HTTPS Git sources")
+	}
+	return s.InstallLocal(source)
+}
+
 type stagedSnapshot struct {
-	source string
-	root   string
-	tmp    string
-	pkg    *Package
-	digest string
+	source   string
+	ref      string
+	revision string
+	root     string
+	tmp      string
+	pkg      *Package
+	digest   string
+}
+
+func (s *stagedSnapshot) installed(root string) InstalledPackage {
+	return InstalledPackage{
+		Name: s.pkg.Manifest.Name, Version: s.pkg.Manifest.Version, Description: s.pkg.Manifest.Description,
+		Source: s.source, Ref: s.ref, Revision: s.revision, Root: root, Digest: s.digest,
+	}
 }
 
 func (s *Store) stageLocalSnapshot(source string) (*stagedSnapshot, error) {
@@ -333,7 +359,7 @@ func (s *Store) stageLocalSnapshot(source string) (*stagedSnapshot, error) {
 		_ = os.RemoveAll(tmp)
 		return nil, fmt.Errorf("hash package snapshot: %w", err)
 	}
-	return &stagedSnapshot{source: sourceRoot, root: root, tmp: tmp, pkg: pkg, digest: digest}, nil
+	return &stagedSnapshot{source: sourceRoot, root: root, tmp: tmp, pkg: pkg, digest: digest, revision: digest}, nil
 }
 
 func (s *stagedSnapshot) cleanup() {
@@ -347,6 +373,247 @@ func (s *Store) List() ([]InstalledPackage, error) {
 		return nil, err
 	}
 	return append([]InstalledPackage(nil), index.Packages...), nil
+}
+
+// UpdateLocal validates a fresh local snapshot before replacing the active
+// installed record. Existing immutable snapshots are deliberately retained.
+func (s *Store) UpdateLocal(name, source string) (*InstalledPackage, error) {
+	return s.update(name, func() (*stagedSnapshot, error) {
+		return s.stageLocalSnapshot(source)
+	})
+}
+
+// Update chooses a local-directory or public HTTPS Git update based on source.
+func (s *Store) Update(name, source, ref string) (*InstalledPackage, error) {
+	if isHTTPSURL(source) {
+		return s.UpdateGit(name, source, ref)
+	}
+	if isNonHTTPSRemote(source) {
+		return nil, fmt.Errorf("package Git source must be a public HTTPS URL")
+	}
+	if ref != "" {
+		return nil, fmt.Errorf("--ref is only supported for public HTTPS Git sources")
+	}
+	return s.UpdateLocal(name, source)
+}
+
+// InstallGit installs a package from a public HTTPS Git repository. ref must
+// name a tag or a full commit SHA; branches and HEAD are never selected.
+func (s *Store) InstallGit(source, ref string) (*InstalledPackage, error) {
+	if _, err := validateGitSource(source, ref); err != nil {
+		return nil, err
+	}
+	unlock, err := s.lockIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unlock() }()
+
+	staged, err := s.stageGitSnapshot(source, ref)
+	if err != nil {
+		return nil, err
+	}
+	defer staged.cleanup()
+	index, err := s.readIndex()
+	if err != nil {
+		return nil, err
+	}
+	for _, installed := range index.Packages {
+		if installed.Name == staged.pkg.Manifest.Name {
+			return nil, fmt.Errorf("package %q is already installed", staged.pkg.Manifest.Name)
+		}
+	}
+	installed, err := s.publishStaged(staged)
+	if err != nil {
+		return nil, err
+	}
+	index.Packages = append(index.Packages, *installed)
+	sort.Slice(index.Packages, func(i, j int) bool { return index.Packages[i].Name < index.Packages[j].Name })
+	if err := s.writeIndex(index); err != nil {
+		return nil, err
+	}
+	return installed, nil
+}
+
+// UpdateGit replaces an installed package with a newly fetched, validated
+// snapshot from a public HTTPS Git source.
+func (s *Store) UpdateGit(name, source, ref string) (*InstalledPackage, error) {
+	if _, err := validateGitSource(source, ref); err != nil {
+		return nil, err
+	}
+	return s.update(name, func() (*stagedSnapshot, error) {
+		return s.stageGitSnapshot(source, ref)
+	})
+}
+
+func (s *Store) update(name string, stage func() (*stagedSnapshot, error)) (*InstalledPackage, error) {
+	if !kebabCase.MatchString(name) {
+		return nil, fmt.Errorf("package name must match ^[a-z][a-z0-9-]*$")
+	}
+	unlock, err := s.lockIndex()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = unlock() }()
+	staged, err := stage()
+	if err != nil {
+		return nil, err
+	}
+	defer staged.cleanup()
+	if staged.pkg.Manifest.Name != name {
+		return nil, fmt.Errorf("updated package name %q does not match installed package %q", staged.pkg.Manifest.Name, name)
+	}
+	index, err := s.readIndex()
+	if err != nil {
+		return nil, err
+	}
+	position := -1
+	for i, installed := range index.Packages {
+		if installed.Name == name {
+			position = i
+			break
+		}
+	}
+	if position == -1 {
+		return nil, fmt.Errorf("package %q is not installed", name)
+	}
+	installed, err := s.publishStaged(staged)
+	if err != nil {
+		return nil, err
+	}
+	index.Packages[position] = *installed
+	if err := s.writeIndex(index); err != nil {
+		return nil, err
+	}
+	return installed, nil
+}
+
+func (s *Store) publishStaged(staged *stagedSnapshot) (*InstalledPackage, error) {
+	target := filepath.Join(s.root, "packages", staged.pkg.Manifest.Name, staged.digest)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return nil, fmt.Errorf("create package snapshot parent: %w", err)
+	}
+	if _, err := os.Stat(target); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("stat package snapshot: %w", err)
+	} else if os.IsNotExist(err) {
+		if err := os.Rename(staged.root, target); err != nil {
+			return nil, fmt.Errorf("publish package snapshot: %w", err)
+		}
+	}
+	if err := validateSnapshotDigest(target, staged.digest); err != nil {
+		return nil, err
+	}
+	installed := staged.installed(target)
+	return &installed, nil
+}
+
+func (s *Store) stageGitSnapshot(source, ref string) (*stagedSnapshot, error) {
+	parent := filepath.Join(s.root, "packages")
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return nil, fmt.Errorf("create package snapshot parent: %w", err)
+	}
+	tmp, err := os.MkdirTemp(parent, ".package-")
+	if err != nil {
+		return nil, fmt.Errorf("create package snapshot: %w", err)
+	}
+	root := filepath.Join(tmp, "contents")
+	repo, err := git.PlainClone(root, false, &git.CloneOptions{URL: source, NoCheckout: true, Tags: git.AllTags})
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("clone package repository: %w", err)
+	}
+	revision, err := resolveGitRevision(repo, ref)
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, err
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("open package worktree: %w", err)
+	}
+	if err := worktree.Checkout(&git.CheckoutOptions{Hash: revision, Force: true}); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("checkout package revision %s: %w", revision, err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, ".git")); err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("remove package Git metadata: %w", err)
+	}
+	pkg, err := LoadDirectory(root)
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("validate package snapshot: %w", err)
+	}
+	digest, err := directoryDigest(pkg.Root)
+	if err != nil {
+		_ = os.RemoveAll(tmp)
+		return nil, fmt.Errorf("hash package snapshot: %w", err)
+	}
+	return &stagedSnapshot{source: source, ref: ref, revision: revision.String(), root: root, tmp: tmp, pkg: pkg, digest: digest}, nil
+}
+
+var commitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+
+func validateGitSource(source, ref string) (*url.URL, error) {
+	parsed, err := url.Parse(source)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return nil, fmt.Errorf("package Git source must be a public HTTPS URL")
+	}
+	if parsed.User != nil {
+		return nil, fmt.Errorf("package Git source must not include credentials")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return nil, fmt.Errorf("package Git source must not include a query or fragment")
+	}
+	lowerPath := strings.ToLower(parsed.Path)
+	for _, suffix := range []string{".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"} {
+		if strings.HasSuffix(lowerPath, suffix) {
+			return nil, fmt.Errorf("package source must be a Git repository, not an archive")
+		}
+	}
+	if ref == "" || strings.EqualFold(ref, "head") || strings.HasPrefix(ref, "refs/heads/") {
+		return nil, fmt.Errorf("package Git ref must be an immutable tag or full commit SHA")
+	}
+	return parsed, nil
+}
+
+func isHTTPSURL(source string) bool {
+	parsed, err := url.Parse(source)
+	return err == nil && parsed.Scheme == "https"
+}
+
+func isNonHTTPSRemote(source string) bool {
+	if strings.HasPrefix(source, "git@") {
+		return true
+	}
+	parsed, err := url.Parse(source)
+	return err == nil && parsed.Scheme != ""
+}
+
+func resolveGitRevision(repo *git.Repository, ref string) (plumbing.Hash, error) {
+	if commitSHA.MatchString(ref) {
+		hash := plumbing.NewHash(ref)
+		if _, err := repo.CommitObject(hash); err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("resolve package commit %q: %w", ref, err)
+		}
+		return hash, nil
+	}
+	tag := strings.TrimPrefix(ref, "refs/tags/")
+	if tag == "" || strings.HasPrefix(tag, "refs/") {
+		return plumbing.ZeroHash, fmt.Errorf("package Git ref must be an immutable tag or full commit SHA")
+	}
+	if _, err := repo.Tag(tag); err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("resolve package tag %q: %w", tag, err)
+	}
+	hash, err := repo.ResolveRevision(plumbing.Revision("refs/tags/" + tag))
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("resolve package tag %q: %w", tag, err)
+	}
+	if _, err := repo.CommitObject(*hash); err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("resolve package tag %q to commit: %w", tag, err)
+	}
+	return *hash, nil
 }
 
 type packageIndex struct {

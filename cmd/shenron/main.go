@@ -22,6 +22,7 @@ func main() {
 		cli.NewPushCmd(&configPath),
 		cli.NewValidateCmd(&configPath),
 		cli.NewInitCmd(),
+		cli.NewPackageCmd(),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	git "github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing/object"
 )
 
 func TestLoadDirectoryAcceptsValidPackage(t *testing.T) {
@@ -498,6 +501,124 @@ func TestStoreListReturnsInstalledLocalPackages(t *testing.T) {
 	}
 	if len(packages) != 1 || packages[0].Name != "acme-reviewers" || packages[0].Digest != installed.Digest || packages[0].Source != resolvedSource {
 		t.Fatalf("List() = %+v, want installed package", packages)
+	}
+}
+
+func TestStoreUpdateLocalReplacesActiveSnapshot(t *testing.T) {
+	source := writePackage(t, validManifest(), validPivot())
+	store := NewStore(filepath.Join(t.TempDir(), "cache"))
+	installed, err := store.InstallLocal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(source, ManifestFileName), strings.Replace(validManifest(), "1.2.3", "1.2.4", 1))
+	writeFile(t, filepath.Join(source, PivotFileName), `version: "1"
+agents:
+  - id: updated
+    description: Updated agent.
+    mode: subagent
+`)
+	updated, err := store.UpdateLocal("acme-reviewers", source)
+	if err != nil {
+		t.Fatalf("UpdateLocal() error = %v", err)
+	}
+	if updated.Version != "1.2.4" || updated.Digest == installed.Digest || updated.Root == installed.Root {
+		t.Fatalf("updated = %+v, original = %+v", updated, installed)
+	}
+	packages, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 || packages[0] != *updated {
+		t.Fatalf("List() = %+v, want active update %+v", packages, updated)
+	}
+}
+
+func TestStoreUpdateLocalKeepsActiveSnapshotWhenReplacementIsInvalid(t *testing.T) {
+	source := writePackage(t, validManifest(), validPivot())
+	store := NewStore(filepath.Join(t.TempDir(), "cache"))
+	installed, err := store.InstallLocal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	writeFile(t, filepath.Join(source, ManifestFileName), `schemaVersion: "1"
+name: a-different-package
+version: 1.2.4
+description: A different package.
+`)
+	if _, err := store.UpdateLocal("acme-reviewers", source); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("UpdateLocal() error = %v, want identity error", err)
+	}
+	packages, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(packages) != 1 || packages[0] != *installed {
+		t.Fatalf("List() = %+v, want original active package %+v", packages, installed)
+	}
+}
+
+func TestStoreInstallGitRejectsUnsafeSourcesAndMutableRefs(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "cache"))
+	tests := []struct {
+		name, source, ref, want string
+	}{
+		{"ssh", "git@github.com:acme/reviewers.git", "v1.2.3", "HTTPS"},
+		{"credentials", "https://token@example.com/acme/reviewers.git", "v1.2.3", "credentials"},
+		{"archive", "https://example.com/reviewers.tar.gz", "v1.2.3", "Git repository"},
+		{"branch", "https://example.com/acme/reviewers.git", "refs/heads/main", "immutable"},
+		{"head", "https://example.com/acme/reviewers.git", "HEAD", "immutable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := store.InstallGit(tt.source, tt.ref)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("InstallGit() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestStoreInstallRejectsNonHTTPSRemoteSources(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "cache"))
+	for _, source := range []string{"git@github.com:acme/reviewers.git", "ssh://github.com/acme/reviewers.git", "http://example.com/acme/reviewers.git"} {
+		if _, err := store.Install(source, ""); err == nil || !strings.Contains(err.Error(), "public HTTPS") {
+			t.Errorf("Install(%q) error = %v, want HTTPS source rejection", source, err)
+		}
+	}
+}
+
+func TestResolveGitRevisionAcceptsTagAndFullCommitSHA(t *testing.T) {
+	root := t.TempDir()
+	repo, err := git.PlainInit(root, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "README.md"), "package")
+	if _, err := worktree.Add("README.md"); err != nil {
+		t.Fatal(err)
+	}
+	commit, err := worktree.Commit("initial", &git.CommitOptions{Author: &object.Signature{Name: "Test", Email: "test@example.com", When: time.Now()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CreateTag("v1.2.3", commit, nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, ref := range []string{"v1.2.3", commit.String()} {
+		resolved, err := resolveGitRevision(repo, ref)
+		if err != nil {
+			t.Fatalf("resolveGitRevision(%q) error = %v", ref, err)
+		}
+		if resolved != commit {
+			t.Errorf("resolveGitRevision(%q) = %s, want %s", ref, resolved, commit)
+		}
 	}
 }
 
