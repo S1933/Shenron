@@ -40,7 +40,7 @@ go build -o shenron ./cmd/shenron
 
 ```bash
 # Import the first available native configuration into ./shenron.yaml.
-# OpenCode is tried first, then Claude Code.
+# OpenCode is tried first, then Claude Code, then Codex.
 ./shenron init
 
 # Edit the pivot and validate it.
@@ -328,7 +328,7 @@ The test suite contains:
 - ordered OpenCode merge and preservation tests;
 - CLI bootstrap, diff, push, force, and orphan-scope tests;
 - atomic-write and state-file tests;
-- end-to-end round-trip tests for both targets, including per-agent skills.
+- end-to-end round-trip tests for all three targets, including per-agent skills.
 
 The root `shenron.yaml`, generated `shenron` binary, and
 `.shenron-state.json` are local dogfood artifacts and are gitignored.
