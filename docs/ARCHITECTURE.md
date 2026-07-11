@@ -11,15 +11,18 @@ and OpenCode.
 The system is intentionally one-way:
 
 ```text
-shenron.yaml -> validated pivot model -> target adapters -> native files
-                                            |
-                                            v
-                                  diff and state tracking
+shenron-package.yaml + shenron.yaml
+  -> validated package snapshot in ~/.shenron/packages
+    -> target adapters -> native files
+                          |
+                          v
+                  diff and state tracking
 ```
 
-`init` is the exception: it bootstraps a new pivot file from an existing
-OpenCode, Claude Code, or Codex configuration. Normal synchronization never reads a
-native configuration back into the pivot.
+The pivot is no longer the unit of user-facing distribution. Users ship and
+version **packages** (a manifest plus a pivot), and Shenron validates, stores,
+and pushes from those packages. Synchronization always flows from a package
+snapshot to native files; native files are never read back into a pivot.
 
 ## Architectural drivers
 
@@ -35,25 +38,29 @@ native configuration back into the pivot.
 ```mermaid
 flowchart LR
     User[User] --> CLI[shenron CLI]
-    Pivot[shenron.yaml] --> CLI
+    Package[shenron-package.yaml\n+ shenron.yaml] --> CLI
+    Store[~/.shenron/packages\ncontent-addressed snapshots] --> CLI
     Prompt[Referenced prompt files] --> CLI
     CLI --> Claude[Claude Code config\n~/.claude]
     CLI --> Codex[Codex config\n~/.codex]
     CLI --> OpenCode[OpenCode config\n~/.config/opencode]
-    CLI --> State[.shenron-state.json]
+    CLI --> State[state per package\n~/.shenron/packages/state]
 ```
 
-The application accesses only local files. There are no network calls, daemon
-processes, plugin loaders, or remote persistence mechanisms in the current
-implementation.
+The application accesses local files for the package store and the native
+configs. The only network call is `git clone` against public HTTPS remotes
+during `package install` or `package update`. There are no daemons, plugin
+loaders, or remote persistence layers.
 
 ## Module map
 
 | Module | Responsibility | Main interface |
 |---|---|---|
 | `cmd/shenron` | Process entry point and root Cobra command | Executable invocation |
-| `internal/cli` | Command construction and synchronization orchestration | `RunInit`, `RunValidate`, `RunDiff`, `RunPush`, `Generate` |
-| `internal/pivot` | Pivot schema, YAML parsing, validation, and discovery | `Discover`, `Parse`, pivot types |
+| `internal/cli` | Package command construction and sync orchestration | `RunPackageInstall`, `RunPackageList`, `RunPackageUpdate`, `RunPackageDiff`, `RunPackagePush`, `Generate` |
+| `internal/cli/sync_runtime.go` | Pivot sync runtime (preflight, diff, write) shared with the package flow | `RunDiff`, `RunPush`, `runDiffAt`, `runPushAt` |
+| `internal/package` | Package manifest parsing, validation, install/update lifecycle, store IO | `Store`, `Install`, `Update`, `ValidateGitSource` |
+| `internal/pivot` | Pivot schema, YAML parsing, validation | `Parse`, `ParseStrict`, pivot types |
 | `internal/adapter` | Seam between the tool-neutral model and target formats | `Adapter` |
 | `internal/adapter/claude` | Claude Markdown/frontmatter generation | `adapter.Adapter` implementation |
 | `internal/adapter/codex` | Codex TOML custom-agent and Markdown custom-prompt generation | `adapter.Adapter` implementation |
@@ -144,9 +151,11 @@ sequenceDiagram
 
 ### Discovery
 
-`pivot.Discover` gives an explicit `--config` path priority, otherwise walks
-upward from the current directory looking for `shenron.yaml`, then falls back
-to `$HOME/.shenron/shenron.yaml`.
+There is no global pivot lookup. Each `package install` argument is either a
+local directory path or a `https://` Git URL with an immutable `--ref`
+(tag or full commit SHA). The store path under
+`~/.shenron/packages/packages/<name>/<digest>/` is content-addressed; the
+active digest is recorded in the package index.
 
 ### Generation
 

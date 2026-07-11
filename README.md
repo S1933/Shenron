@@ -3,9 +3,10 @@
 Shenron keeps agent configurations aligned across AI coding assistants from
 one CLI-agnostic source of truth.
 
-Define agents, prompts, slash commands, permissions, and per-agent skill
-bindings once in `shenron.yaml`. Shenron validates that pivot, previews the
-native changes, then writes the corresponding Claude Code, Codex, and OpenCode files.
+Configurations ship as self-contained **packages** — a directory holding a
+`shenron-package.yaml` manifest and a `shenron.yaml` pivot. Install a package,
+preview what would change on each target, then push to the Claude Code, Codex,
+and OpenCode native configs.
 
 ## What it supports
 
@@ -16,7 +17,6 @@ native changes, then writes the corresponding Claude Code, Codex, and OpenCode f
 | Slash commands | `~/.claude/commands/<id>.md` | `~/.codex/prompts/<id>.md` | `command.<id>` plus `command/<id>.md` |
 | Permissions | `tools` and `permissionMode` | Sandbox, approvals, and web search | Native `permission` object |
 | Per-agent skills | YAML frontmatter `skills` | Instruction hint | Native JSON `skills` array |
-| Bootstrap with `init` | After OpenCode | After Claude Code | Preferred import source |
 
 Shenron targets Claude Code, Codex, and OpenCode.
 
@@ -38,51 +38,61 @@ go build -o shenron ./cmd/shenron
 
 ## Quick start
 
-```bash
-# Import the first available native configuration into ./shenron.yaml.
-# OpenCode is tried first, then Claude Code.
-./shenron init
+A package is a directory with two files:
 
-# Edit the pivot and validate it.
-./shenron validate
-
-# Preview all native changes without writing.
-./shenron diff
-
-# Push to every supported target.
-./shenron push
+```
+my-package/
+├── shenron-package.yaml   # manifest: name, version, skills
+└── shenron.yaml           # pivot: agents, commands, permissions
 ```
 
-To work with one target only:
+Install it from a local directory or a public Git repository:
 
 ```bash
-./shenron diff --target opencode
-./shenron push --target claude-code
+# Local
+./shenron package install ./my-package
+
+# Public Git (HTTPS, immutable tag or full commit SHA required)
+./shenron package install https://github.com/S1933/main-agentic-workflow.git --ref 1.1
+```
+
+Inspect the installed package and preview the changes on every target:
+
+```bash
+./shenron package list
+./shenron package diff shenron-config
+```
+
+Apply the changes (first push requires explicit permission approval):
+
+```bash
+./shenron package push shenron-config --allow-permissions
 ```
 
 After a successful push, running `diff` again reports `No changes` for each
-synchronized target.
+synchronized target. Bumping to a new upstream tag:
 
-## Commands and flags
+```bash
+./shenron package update shenron-config --ref 1.2
+./shenron package push shenron-config --allow-permissions
+```
+
+## Commands
 
 | Command | Behavior |
 |---|---|
-| `init` | Creates `./shenron.yaml` from the first usable native config. Refuses to overwrite an existing pivot. |
-| `validate` | Parses the pivot and checks schema rules, identifiers, permissions, references, and prompt files. |
-| `diff` | Shows created, modified, manually modified, and orphaned native files without writing. |
-| `push` | Generates and atomically writes native files, then updates `.shenron-state.json`. |
+| `package install <source>` | Install a local directory or a public HTTPS Git package. |
+| `package list` | List installed packages, ordered by name. |
+| `package update <name>` | Validate and replace an installed snapshot from a new source or ref. |
+| `package diff <name>` | Show created, modified, manually modified, and orphaned native files without writing. |
+| `package push <name>` | Generate and atomically write native files, then update package state. |
 
 Common flags:
 
-- `-c, --config <path>` selects an explicit pivot file.
-- `diff --target <name>` and `push --target <name>` select `claude-code`,
-  `codex`, or `opencode`.
-- `push --dry-run` is equivalent to `diff`.
-- `push --force` overwrites native files that changed after the last push.
-
-Without `--config`, Shenron searches for `shenron.yaml` from the current
-directory upward to the filesystem root. If none is found, it tries
-`~/.shenron/shenron.yaml`.
+- `package --store <path>` selects a custom package cache directory (default `~/.shenron/packages`).
+- `package diff --target <name>` and `package push --target <name>` limit to `claude-code`, `codex`, or `opencode`.
+- `package push --force` overwrites native files that changed after the last push.
+- `package push --allow-permissions` approves the package's declared permission grants for this revision.
 
 ## Pivot file
 
@@ -215,20 +225,25 @@ permissions have no equivalent per-agent Codex enforcement. Use
 explicit native override. Codex receives each agent skill list as an
 instruction hint; Shenron does not resolve local skill paths or install skills.
 
-## Bootstrap and round-trip behavior
+## Authoring a package
 
-`shenron init` writes a new pivot in the current directory:
+A package is two files in one directory:
 
-1. It tries `~/.config/opencode/opencode.json`.
-2. If OpenCode is missing or unusable, it tries `~/.claude/agents` and
-   `~/.claude/commands`.
-3. If Claude Code is unavailable, it tries `~/.codex/agents` and
-   `~/.codex/prompts`.
-4. It imports supported agents, commands, prompts, permissions, model
-   overrides, and per-agent skills.
+- `shenron-package.yaml` — manifest with `schemaVersion`, `name`, `version`,
+  `description`, and optional `skills.required` / `skills.optional`. `name` must
+  match `^[a-z][a-z0-9-]*$`; `version` must be a strict semver string.
+- `shenron.yaml` — the pivot, identical to what `package install` validates and
+  ships. Every `promptFile` reference must stay inside the package directory.
 
-Bootstrap is intentionally selective. Native fields without a pivot equivalent
-are ignored, except for supported values preserved under `extensions`.
+Author the pivot and manifest by hand, then `shenron package install <dir>`
+brings it into the local store. To publish: `git init`, `git tag v<version>`,
+`git push --tags` from a public Git host, then `shenron package install
+<url> --ref <tag>` on the target machine.
+
+The pivot schema is intentionally smaller than any native format. Native fields
+without a pivot equivalent are ignored, except for supported values preserved
+under `extensions` (`extensions.claude`, `extensions.opencode`,
+`extensions.codex`).
 
 ## Synchronization and safety
 
