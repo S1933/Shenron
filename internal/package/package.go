@@ -275,28 +275,16 @@ func (s *Store) InstallLocal(source string) (*InstalledPackage, error) {
 		}
 	}
 
-	target := filepath.Join(s.root, "packages", staged.pkg.Manifest.Name, staged.digest)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return nil, fmt.Errorf("create package snapshot parent: %w", err)
-	}
-	if _, err := os.Stat(target); err != nil && !os.IsNotExist(err) {
-		return nil, fmt.Errorf("stat package snapshot: %w", err)
-	} else if os.IsNotExist(err) {
-		if err := os.Rename(staged.root, target); err != nil {
-			return nil, fmt.Errorf("publish package snapshot: %w", err)
-		}
-	}
-	if err := validateSnapshotDigest(target, staged.digest); err != nil {
+	installed, err := s.publishStaged(staged)
+	if err != nil {
 		return nil, err
 	}
-
-	installed := staged.installed(target)
-	index.Packages = append(index.Packages, installed)
+	index.Packages = append(index.Packages, *installed)
 	sort.Slice(index.Packages, func(i, j int) bool { return index.Packages[i].Name < index.Packages[j].Name })
 	if err := s.writeIndex(index); err != nil {
 		return nil, err
 	}
-	return &installed, nil
+	return installed, nil
 }
 
 // Install chooses a local-directory or public HTTPS Git installation based on
