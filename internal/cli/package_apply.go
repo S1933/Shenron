@@ -68,7 +68,7 @@ func RunPackageDiff(opts PackageDiffOptions) error {
 	if err := printPackageRequirements(output, permissionGrants(pkg.Pivot), required, optional); err != nil {
 		return err
 	}
-	return runDiffAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Adapters, packageStore(opts.Store).StateDir(installed.Name))
+	return runDiffAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Adapters, packageStore(opts.Store).StateDir(installed.Name), output, os.Stderr)
 }
 
 // RunPackagePush applies exactly one installed package. Package state and
@@ -114,7 +114,7 @@ func RunPackagePush(opts PackagePushOptions) error {
 		recordPackageOpenCodeOwnership(pkg.Pivot, generated["opencode"], state)
 		return nil
 	}
-	return runPushAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Force, opts.Adapters, store.StateDir(installed.Name), preflight, postflight)
+	return runPushAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Force, opts.Adapters, store.StateDir(installed.Name), preflight, postflight, output, os.Stderr)
 }
 
 // NewDiffCmd builds the top-level `diff` command.

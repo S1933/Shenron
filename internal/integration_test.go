@@ -42,7 +42,7 @@ func TestEndToEnd_PushCodex(t *testing.T) {
 		t.Errorf("Codex command did not delegate:\n%s", command)
 	}
 
-	out, err := cli.CaptureOutput(func() error { return cli.RunDiff(env.diffOpts("codex")) })
+	out, _, err := cli.CaptureOutput(func() error { return cli.RunDiff(env.diffOpts("codex")) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestEndToEnd_PushOpenCode(t *testing.T) {
 	assertOpenCodePush(t, env)
 	assertStateFile(t, env.pivotDir)
 
-	out, err := cli.CaptureOutput(func() error {
+	out, _, err := cli.CaptureOutput(func() error {
 		return cli.RunDiff(env.diffOpts("opencode"))
 	})
 	if err != nil {
@@ -84,7 +84,7 @@ func TestEndToEnd_PivotEditDiffPush(t *testing.T) {
 		t.Fatalf("modify pivot: %v", err)
 	}
 
-	out, err := cli.CaptureOutput(func() error {
+	out, _, err := cli.CaptureOutput(func() error {
 		return cli.RunDiff(env.diffOpts("opencode"))
 	})
 	if err != nil {
@@ -109,7 +109,7 @@ func TestEndToEnd_PivotEditDiffPush(t *testing.T) {
 		t.Fatalf("prompt not updated, got:\n%s", promptData)
 	}
 
-	out, err = cli.CaptureOutput(func() error {
+	out, _, err = cli.CaptureOutput(func() error {
 		return cli.RunDiff(env.diffOpts("opencode"))
 	})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestEndToEnd_ManualEditDetection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := cli.CaptureOutput(func() error {
+	out, _, err := cli.CaptureOutput(func() error {
 		return cli.RunDiff(env.diffOpts("opencode"))
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestEndToEnd_ManualEditDetection(t *testing.T) {
 		t.Fatalf("force push: %v", err)
 	}
 
-	out, err = cli.CaptureOutput(func() error {
+	out, _, err = cli.CaptureOutput(func() error {
 		return cli.RunDiff(env.diffOpts("opencode"))
 	})
 	if err != nil {
@@ -257,7 +257,7 @@ func TestEndToEnd_TargetedPushNoClaudeOrphans(t *testing.T) {
 		t.Fatalf("full push: %v", err)
 	}
 
-	out, err := cli.CaptureOutput(func() error {
+	out, _, err := cli.CaptureOutput(func() error {
 		return cli.RunPush(env.pushOpts("opencode"))
 	})
 	if err != nil {
@@ -333,7 +333,7 @@ func TestEndToEnd_PushBothTargets(t *testing.T) {
 		t.Fatalf("claude build agent missing: %v", err)
 	}
 
-	out, err := cli.CaptureOutput(func() error {
+	out, _, err := cli.CaptureOutput(func() error {
 		return cli.RunDiff(env.diffOpts(""))
 	})
 	if err != nil {

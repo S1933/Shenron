@@ -33,29 +33,33 @@ type DiffOptions struct {
 
 // RunDiff shows differences between pivot and native configs.
 func RunDiff(opts DiffOptions) error {
-	return runDiffAt(opts.ConfigPath, opts.Target, opts.Adapters, "")
+	return runDiffAt(opts.ConfigPath, opts.Target, opts.Adapters, "", os.Stdout, os.Stderr)
 }
 
-// CaptureOutput runs fn while capturing stdout.
-func CaptureOutput(fn func() error) (string, error) {
-	old := os.Stdout
-	r, w, err := os.Pipe()
+// CaptureOutput runs fn while capturing stdout and stderr separately.
+func CaptureOutput(fn func() error) (stdout, stderr string, err error) {
+	oldOut, oldErr := os.Stdout, os.Stderr
+	rOut, wOut, err := os.Pipe()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	os.Stdout = w
+	rErr, wErr, err := os.Pipe()
+	if err != nil {
+		_ = wOut.Close()
+		return "", "", err
+	}
+	os.Stdout = wOut
+	os.Stderr = wErr
 
 	runErr := fn()
-	if closeErr := w.Close(); closeErr != nil && runErr == nil {
-		runErr = closeErr
-	}
-	os.Stdout = old
+	_ = wOut.Close()
+	_ = wErr.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
 
-	data, readErr := io.ReadAll(r)
-	if readErr != nil && runErr == nil {
-		runErr = readErr
-	}
-	return string(data), runErr
+	outData, _ := io.ReadAll(rOut)
+	errData, _ := io.ReadAll(rErr)
+	return string(outData), string(errData), runErr
 }
 
 // PushOptions configures push for testing and programmatic use.
@@ -68,7 +72,7 @@ type PushOptions struct {
 
 // RunPush pushes pivot config to native CLI configs.
 func RunPush(opts PushOptions) error {
-	return runPushAt(opts.ConfigPath, opts.Target, opts.Force, opts.Adapters, "", nil, nil)
+	return runPushAt(opts.ConfigPath, opts.Target, opts.Force, opts.Adapters, "", nil, nil, os.Stdout, os.Stderr)
 }
 
 type pushPreflight func(generated map[string]map[string]string, state *diff.StateFile, adapters map[string]adapter.Adapter) error
@@ -78,7 +82,14 @@ type pushPostflight func(generated map[string]map[string]string, state *diff.Sta
 // public Go API and the package flow. They accept an explicit stateDir so the
 // package flow can keep its state under ~/.shenron/packages/state/<name>/.
 
-func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string) error {
+func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string, stdout, stderr io.Writer) error {
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+
 	_, generated, state, resolved, err := prepareSyncAt(configPath, target, adapters, stateDir)
 	if err != nil {
 		return err
@@ -97,13 +108,13 @@ func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, s
 		results = diff.FilterOrphaned(results)
 
 		if !diff.HasChanges(results) {
-			fmt.Printf("[%s] No changes\n", name)
+			fmt.Fprintf(stdout, "[%s] No changes\n", name)
 			continue
 		}
 
 		hasChanges = true
-		fmt.Printf("[%s]\n", name)
-		fmt.Print(diff.FormatDiff(results, colored))
+		fmt.Fprintf(stdout, "[%s]\n", name)
+		fmt.Fprint(stdout, diff.FormatDiff(results, colored))
 	}
 
 	merged := mergeGenerated(generated)
@@ -117,17 +128,24 @@ func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, s
 	})
 	for _, r := range orphaned {
 		hasChanges = true
-		fmt.Printf("warning: orphaned %s (removed from pivot, still on disk)\n", r.Path)
+		fmt.Fprintf(stderr, "warning: orphaned %s (removed from pivot, still on disk)\n", r.Path)
 	}
 
 	if !hasChanges {
-		fmt.Println("No changes")
+		fmt.Fprintln(stdout, "No changes")
 	}
 
 	return nil
 }
 
-func runPushAt(configPath, target string, force bool, adapters map[string]adapter.Adapter, stateDir string, preflight pushPreflight, postflight pushPostflight) error {
+func runPushAt(configPath, target string, force bool, adapters map[string]adapter.Adapter, stateDir string, preflight pushPreflight, postflight pushPostflight, stdout, stderr io.Writer) error {
+	if stdout == nil {
+		stdout = os.Stdout
+	}
+	if stderr == nil {
+		stderr = os.Stderr
+	}
+
 	pivotDir, generated, state, adapters, err := prepareSyncAt(configPath, target, adapters, stateDir)
 	if err != nil {
 		return err
@@ -160,7 +178,7 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 		return fmt.Errorf("%w: %s", ErrManualEdits, strings.TrimSpace(b.String()))
 	}
 
-	printOrphanWarnings(diff.OrphanedOnly(results))
+	printOrphanWarnings(stderr, diff.OrphanedOnly(results))
 
 	wroteAny := false
 	for _, name := range sortedAdapterNames(generated) {
@@ -179,7 +197,7 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 					return fmt.Errorf("write %s: %w", r.Path, err)
 				}
 				state.SetFile(r.Path, name, []byte(content))
-				fmt.Printf("[%s] wrote %s (%s)\n", name, r.Path, diffStatusName(r.Status))
+				fmt.Fprintf(stdout, "[%s] wrote %s (%s)\n", name, r.Path, diffStatusName(r.Status))
 				wroteAny = true
 			case diff.StatusUnchanged:
 				state.SetFile(r.Path, name, []byte(r.NewContent))
@@ -197,9 +215,9 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 	}
 
 	if !wroteAny {
-		fmt.Println("No changes")
+		fmt.Fprintln(stdout, "No changes")
 	} else {
-		fmt.Printf("state updated: %s\n", filepath.Join(stateDir, ".shenron-state.json"))
+		fmt.Fprintf(stdout, "state updated: %s\n", filepath.Join(stateDir, ".shenron-state.json"))
 	}
 
 	return nil
@@ -218,10 +236,10 @@ func diffStatusName(status diff.DiffStatus) string {
 	}
 }
 
-func printOrphanWarnings(results []diff.DiffResult) {
+func printOrphanWarnings(stderr io.Writer, results []diff.DiffResult) {
 	for _, r := range results {
 		if r.Status == diff.StatusOrphaned {
-			fmt.Printf("warning: orphaned %s (removed from pivot, still on disk)\n", r.Path)
+			fmt.Fprintf(stderr, "warning: orphaned %s (removed from pivot, still on disk)\n", r.Path)
 		}
 	}
 }
