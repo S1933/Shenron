@@ -225,12 +225,12 @@ func splitLines(s string) []string {
 }
 
 const (
-	colorNone  = ""
-	colorRed   = "\033[31m"
-	colorGreen = "\033[32m"
+	colorNone   = ""
+	colorRed    = "\033[31m"
+	colorGreen  = "\033[32m"
 	colorYellow = "\033[33m"
-	colorBold  = "\033[1m"
-	colorReset = "\033[0m"
+	colorBold   = "\033[1m"
+	colorReset  = "\033[0m"
 )
 
 func writeLine(buf *strings.Builder, colored bool, color, line string) {
