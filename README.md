@@ -4,12 +4,13 @@
   <img src="docs/images/shenron.jpg" alt="Shenron — the configuration dragon" width="600">
 </p>
 
-Shenron keeps agent configurations aligned across AI coding assistants from
-one CLI-agnostic source of truth.
+Shenron keeps agent configurations aligned across AI coding assistants from one
+CLI-agnostic source of truth.
 
 Define agents, prompts, slash commands, permissions, and per-agent skill
 bindings once in `shenron.yaml`. Shenron validates that pivot, previews the
-native changes, then writes the corresponding Claude Code, Codex, and OpenCode files.
+native changes, then writes the corresponding Claude Code, Codex, and OpenCode
+files.
 
 ## What it supports
 
@@ -22,8 +23,6 @@ native changes, then writes the corresponding Claude Code, Codex, and OpenCode f
 | Per-agent skills | YAML frontmatter `skills` | Instruction hint | Native JSON `skills` array |
 | Bootstrap with `shenron install` | After OpenCode | After Claude Code | Preferred import source |
 
-Shenron targets Claude Code, Codex, and OpenCode.
-
 ## Install
 
 Shenron requires Go 1.24 or newer.
@@ -34,17 +33,13 @@ cd Shenron
 make build
 ```
 
-This produces `./shenron`. You can also build it directly:
-
-```bash
-go build -o shenron ./cmd/shenron
-```
+This produces `./shenron` (or run `go build -o shenron ./cmd/shenron` directly).
 
 ## Quick start
 
-Shenron manages installed configuration packages. Every command operates on
+Shenron manages installed configuration **packages**. Every command operates on
 a package in the store (`~/.shenron/packages/` by default); there is no
-single-pivot mode.
+`shenron init` or single-pivot mode.
 
 ```bash
 # Install a local package directory.
@@ -60,7 +55,7 @@ single-pivot mode.
 ./shenron push my-package
 ```
 
-To work with one target only:
+Work with one target only:
 
 ```bash
 ./shenron diff my-package --target opencode
@@ -68,10 +63,10 @@ To work with one target only:
 ```
 
 The first time a revision declares permission grants, `push` requires
-`--allow-permissions`. After a successful push, running `diff` again
-reports `No changes` for each synchronized target.
+`--allow-permissions`. After a successful push, `diff` reports `No changes` for
+each synchronized target.
 
-## Commands and flags
+## Commands
 
 | Command | Behavior |
 |---|---|
@@ -81,24 +76,19 @@ reports `No changes` for each synchronized target.
 | `shenron diff <name>` | Show a package's native diff plus its permission grants and missing skills. |
 | `shenron push <name>` | Generate and atomically write a package's native files, then update its state. |
 
-Common flags:
+Flags:
 
-- `--store <path>` (root, persistent) selects a custom package cache
-  directory (default `~/.shenron/packages`).
-- `install --ref <tag-or-sha>` pins the Git revision for HTTPS sources.
-- `update --source <dir-or-url>` and `update --ref <tag-or-sha>` replace the
-  installed package's source and revision.
-- `diff --target <name>` and `push --target <name>` select `claude-code`,
-  `codex`, or `opencode`.
-- `push --force` overwrites native files that changed after the last push.
-- `push --allow-permissions` approves the package revision's declared
-  permission grants; the approval is bound to the installed revision and its
-  permission digest.
+- `--store <path>` (root, persistent) — custom package cache directory (default `~/.shenron/packages`).
+- `install --ref <tag-or-sha>` — pin the Git revision for HTTPS sources.
+- `update --source <dir-or-url>` / `update --ref <tag-or-sha>` — replace the installed package's source and revision.
+- `diff --target <name>` / `push --target <name>` — select `claude-code`, `codex`, or `opencode`.
+- `push --force` — overwrite native files that changed after the last push.
+- `push --allow-permissions` — approve the package revision's declared permission grants; the approval is bound to the installed revision and its permission digest.
 
-## Pivot file
+## The pivot file
 
-The pivot is intentionally smaller than either native format. Shared concepts
-stay portable; target-specific features live under `extensions`.
+The pivot (`shenron.yaml`) is intentionally smaller than any native format.
+Shared concepts stay portable; target-specific features live under `extensions`.
 
 ```yaml
 version: "1"
@@ -165,81 +155,37 @@ skills:
 
 ### Agent fields
 
-| Field | Rules and behavior |
+| Field | Rules |
 |---|---|
-| `id` | Required, unique, and matched by `^[a-z][a-z0-9-]*$`. |
+| `id` | Required, unique, matched by `^[a-z][a-z0-9-]*$`. |
 | `description` | Required; maximum 1024 characters. |
 | `mode` | Required: `primary` or `subagent`. |
-| `model` | Optional fallback used when the target-specific model is absent. |
-| `temperature` | Optional number from `0.0` to `2.0`. |
+| `model` | Optional fallback used when no target-specific model is set. |
+| `temperature` | Optional, `0.0`–`2.0`. |
 | `systemPrompt` / `promptFile` | Mutually exclusive. `promptFile` is relative to the pivot directory and must exist. |
-| `permissions` | Portable grants translated by each adapter. |
-| `extensions` | Target-specific overrides and fields. |
-| `skills` | Optional ordered list of kebab-case skill names, emitted as native agent metadata. Local skill existence is not required. |
+| `permissions` | Portable grants (`allow`/`ask`/`deny`) translated by each adapter. |
+| `extensions` | Target-specific overrides. |
+| `skills` | Optional ordered list of kebab-case skill names emitted as native agent metadata. |
 
-### Per-agent skills and global skill references
+Each adapter resolves the model from `extensions.<target>.model`, then the
+shared `model`, then its own default. `permissions` map to native tools per
+target; see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the per-target
+translation.
 
-These two fields have different purposes:
+### Skills
 
-- `agents[].skills` binds skills to an agent. It round-trips through OpenCode's
+- `agents[].skills` binds skills to an agent and round-trips through OpenCode's
   JSON `skills` array and Claude Code's frontmatter `skills` list.
-- Top-level `skills: [{name: ...}]` stores global references only. Shenron
-  does not manage skill contents or install skills on another machine.
+- Top-level `skills: [{name: ...}]` stores global references only; Shenron does
+  not manage skill contents or install skills on another machine.
 
-The repository's current dogfood bindings are documented in
-[`docs/SKILLS.md`](docs/SKILLS.md).
-
-### Model resolution
-
-For agents, each adapter first looks for its target-specific override:
-
-1. `extensions.claude.model`, `extensions.codex.model`, or `extensions.opencode.model`
-2. the shared `model` field
-3. the target's own default when neither is set
-
-This lets one pivot select different providers or model aliases without
-forcing target-specific names into the shared field.
-
-### Permissions
-
-Claude Code derives:
-
-- `read: allow` → `Read`
-- any allowed bash rule → `Bash`
-- `webfetch: allow` → `WebFetch`
-- `websearch: allow` → `WebSearch`
-- any allowed task → `Task`
-- `edit: allow | ask | deny` → `acceptEdits | default | plan`
-
-`extensions.claude.tools` and `extensions.claude.permissionMode` override those
-derived values.
-
-OpenCode emits `edit`, `bash`, `webfetch`, `websearch`, and `task` directly in
-its `permission` object. A shared `read` value expands to `glob`, `grep`,
-`list`, and `lsp`; `extensions.opencode.permission` can override those four
-sub-permissions individually.
-
-Codex derives a coarse sandbox from `edit`, and maps `websearch` to Codex's
-native search mode. Command-pattern bash rules, `read`, `webfetch`, and task
-permissions have no equivalent per-agent Codex enforcement. Use
-`extensions.codex` (`sandboxMode`, `approvalPolicy`, and `webSearch`) for an
-explicit native override. Codex receives each agent skill list as an
-instruction hint; Shenron does not resolve local skill paths or install skills.
-
-## Getting started
-
-Shenron ships its configuration as a directory containing a manifest and a
-pivot. Hand-write one or import the first usable native config you already
-have, then install it with `shenron install`. There is no `shenron init` —
-every command operates on an installed package.
+The repository's current dogfood bindings are in [`docs/SKILLS.md`](docs/SKILLS.md).
 
 ## Configuration packages
 
-A package bundles a pivot together with a manifest and ships as a
-self-contained directory. Use packages when the same configuration should be
-reliably installed on many machines or released to other users.
-
-A package directory looks like this:
+A package bundles a pivot with a manifest and ships as a self-contained
+directory, so the same configuration can be installed on many machines or
+released to other users.
 
 ```text
 my-package/
@@ -247,12 +193,9 @@ my-package/
 └── shenron.yaml           # pivot: agents, commands, permissions
 ```
 
-`shenron-package.yaml` validates `schemaVersion: "1"`, a kebab-case `name`
-matching `^[a-z][a-z0-9-]*$`, a strict semver `version`, a non-empty
-`description`, and the `skills.required` / `skills.optional` arrays. Every
-`promptFile` referenced by the pivot must stay inside the package directory.
-
-### Install a package
+The manifest validates `schemaVersion: "1"`, a kebab-case `name`, a strict
+semver `version`, a non-empty `description`, and `skills.required` /
+`skills.optional`. Every `promptFile` must stay inside the package directory.
 
 ```bash
 # Local directory
@@ -260,138 +203,50 @@ matching `^[a-z][a-z0-9-]*$`, a strict semver `version`, a non-empty
 
 # Public Git repository (HTTPS only, immutable tag or full commit SHA)
 ./shenron install https://github.com/acme/reviewers.git --ref 1.2.0
+
+# Update to a new source or ref
+./shenron update acme-reviewers --source https://github.com/acme/reviewers.git --ref 1.3.0
 ```
 
-The first install copies the source into a content-addressed snapshot under
-`~/.shenron/packages/<name>/<digest>/`. Each subsequent `install` from Git
-requires `--ref`; branches and `HEAD` are refused. The snapshot's digest is
-revalidated before every load, so a corrupted cache can never be pushed.
+Each install copies the source into a content-addressed snapshot under the
+store. Git sources require `--ref` (an immutable tag or full commit SHA);
+branches, `HEAD`, SSH, and archive URLs are refused. The snapshot digest is
+revalidated before every load, so a corrupted cache can never be pushed. Old
+snapshots are retained across updates.
 
-### List and update
+## Safety
 
-```bash
-./shenron list                                # name, version, source, revision
-./shenron update acme-reviewers \
-    --source https://github.com/acme/reviewers.git --ref 1.3.0
-```
+- **Manual-edit protection** — `.shenron-state.json` records the hash of every
+  file written by a successful push. If a managed native file later differs from
+  both that state and the newly generated output, `push` refuses to overwrite it.
+  Review the diff, reconcile, or use `push --force` deliberately.
+- **Permission approval** — the first push of a revision that declares
+  permission grants requires `--allow-permissions`. The approval is bound to the
+  revision and the SHA-256 digest of the normalized grant list, so changed grants
+  must be approved again. Missing required skills abort the push; missing
+  optional skills warn and continue.
+- **Foreign collisions** — `push` refuses to take over native resources it does
+  not already own, returning `ErrPackageCollision`. `push --force` overwrites
+  manually edited package-owned files.
+- **OpenCode merge** — Shenron upserts pivot agents and commands into
+  `opencode.json` and preserves native-only entries and unrelated top-level
+  fields. The merge is upsert-only; removing an item from the pivot does not
+  delete its nested entry.
 
-`update` stages and validates the new snapshot before swapping the active
-record. Old snapshots are retained.
-
-### Diff and push
-
-```bash
-./shenron diff acme-reviewers                 # preview without writing
-./shenron push acme-reviewers --allow-permissions
-```
-
-`diff` reports the same created / modified / manually-modified / orphaned
-status the package flow has always reported, and additionally surfaces the
-package's declared permission grants plus any required or optional skills
-missing on disk.
-
-`push` requires explicit approval the first time a revision declares
-permission grants. The approval is bound to both the package revision and the
-SHA-256 digest of the normalized grant list (`state/<name>/permissions.json`),
-so a new revision with changed grants must be approved again. Missing required
-skills abort the push; missing optional skills emit a warning and continue.
-
-Packages also refuse to take over native resources they do not already own.
-If a generated path (or a managed nested entry inside `opencode.json`) exists
-on disk without being tracked in the package's own state file, `push` returns
-`ErrPackageCollision` and aborts. `push --force` overwrites manually edited
-package-owned files.
-
-State for a package lives at `~/.shenron/state/<name>/.shenron-state.json`,
-kept outside the immutable snapshot so it survives revisions.
-
-## Synchronization and safety
-
-The sync pipeline is:
-
-1. Discover, parse, and validate the pivot.
-2. Generate each target's files in memory.
-3. Merge OpenCode agent and command fragments into the existing JSON.
-4. Compare generated content with disk and `.shenron-state.json`.
-5. Write changed files atomically and record their hashes.
-
-### OpenCode merge policy
-
-Shenron upserts pivot agents and commands into the nested `agent` and
-`command` objects. Native-only entries and unrelated top-level fields are
-preserved, and existing key order is retained where possible. The JSON document
-is parsed and serialized again, so byte-for-byte formatting is not guaranteed.
-
-The merge is deliberately upsert-only. Removing an agent or command from the
-pivot does not delete its nested OpenCode entry; remove stale JSON entries by
-hand. Standalone managed files that are no longer generated can be reported as
-orphaned, but Shenron still leaves deletion to you.
-
-### Manual-edit protection
-
-`.shenron-state.json`, stored beside the pivot, records the hash of every file
-written by a successful push. If a managed native file later differs from both
-that state and the newly generated output, Shenron marks it as manually
-modified and refuses to overwrite it. Review the diff, reconcile the change, or
-use `push --force` deliberately.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full synchronization
+pipeline and adapter internals.
 
 ## Current limitations
 
-- Sync is pivot-to-native; there is no automatic native-to-pivot merge after
-  initialization.
-- Native entries removed from the pivot are warned about, not deleted.
+- Sync is pivot-to-native only; there is no automatic native-to-pivot merge.
+- Native entries removed from the pivot are reported, not deleted.
 - Skill bindings are metadata only; skill directories and `SKILL.md` contents
-  are outside Shenron's management scope.
-- Skill-name validation checks kebab-case syntax, not local filesystem
-  availability.
+  are outside Shenron's scope.
 - OpenCode JSON is structurally preserved, not guaranteed byte-identical.
-- Package installs accept only local directories or public HTTPS Git
-  repositories, and HTTPS sources require an immutable tag or full commit
-  SHA. Branches, `HEAD`, SSH, and archive URLs are refused.
+- Git installs accept only public HTTPS repositories with an immutable tag or
+  full commit SHA.
 
-## Architecture for contributors
-
-```text
-cmd/shenron/       Cobra entry point
-internal/
-  cli/                 install, list, update, diff, push commands, registry, orchestration
-  pivot/               YAML schema, discovery, parsing, validation
-  package/             shenron-package.yaml manifest, immutable snapshots, Git and local install
-  adapter/
-    claude/            Markdown/frontmatter and command-file generation
-    codex/             TOML custom-agent and Markdown custom-prompt generation
-    opencode/          JSON fragments, ordered merge, prompt/command files
-  diff/                status calculation, unified diffs, state hashes
-  fsutil/              target paths and atomic file replacement
-testdata/              end-to-end fixtures
-docs/                  PRD, plans, and skill-binding matrix
-```
-
-The core consumes the `adapter.Adapter` interface:
-
-```go
-type Adapter interface {
-    Name() string
-    ValidateAgent(pivot.AgentDefinition) error
-    GenerateAgent(pivot.AgentDefinition) (map[string]string, error)
-    GenerateCommand(pivot.CommandDefinition) (map[string]string, error)
-    TargetPaths() []string
-    MergeFile(path string, existing []byte, fragments map[string]any) ([]byte, error)
-}
-```
-
-OpenCode additionally exposes an internal fragment accumulator so orchestration
-can merge all generated agent and command fragments into one `opencode.json`.
-Claude Code generates independent files and returns no merged file.
-
-To add a target:
-
-1. Implement the adapter interface in `internal/adapter/<target>`.
-2. Keep target-specific translation inside that package.
-3. Register the adapter in `internal/cli/registry.go`.
-4. Add mapping tests, golden fixtures, and end-to-end coverage.
-
-## Testing and development
+## Development
 
 ```bash
 make test      # go test ./...
@@ -400,21 +255,12 @@ make build     # go build -o shenron ./cmd/shenron
 make clean     # remove the local binary
 ```
 
-The test suite contains:
-
-- pivot parsing, validation, and discovery tests;
-- adapter mapping and golden-file tests;
-- ordered OpenCode merge and preservation tests;
-- CLI bootstrap, diff, push, force, and orphan-scope tests;
-- cobra-driven surface tests for the five top-level commands
-  (`commands_test.go`);
-- install, list, update, diff, push, permissions, skills, and
-  foreign-collision tests against the package store;
-- atomic-write and state-file tests;
-- end-to-end round-trip tests for all three targets, including per-agent skills.
-
-The root `shenron.yaml`, generated `shenron` binary, and
+The root `shenron.yaml`, the generated `shenron` binary, and
 `.shenron-state.json` are local dogfood artifacts and are gitignored.
 
-For the detailed product contract, see
-[`docs/prd/shenron.md`](docs/prd/shenron.md).
+## Further reading
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — module map, sync pipeline,
+  adapter internals, and the extension guide for adding new targets.
+- [`docs/prd/shenron.md`](docs/prd/shenron.md) — the detailed product contract.
+- [`docs/SKILLS.md`](docs/SKILLS.md) — current dogfood skill bindings.
