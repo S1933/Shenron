@@ -5,10 +5,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/S1933/Shenron/internal/adapter"
 	"github.com/S1933/Shenron/internal/adapter/codex"
 	"github.com/S1933/Shenron/internal/pivot"
 	"github.com/pelletier/go-toml/v2"
 )
+
+// fileContent returns the body of the generated file at path, or "" if absent.
+func fileContent(files []adapter.GeneratedFile, path string) string {
+	for _, f := range files {
+		if f.Path == path {
+			return string(f.Content)
+		}
+	}
+	return ""
+}
 
 func TestGenerateAgentUsesCodexNativeFields(t *testing.T) {
 	baseDir := t.TempDir()
@@ -29,11 +40,11 @@ func TestGenerateAgentUsesCodexNativeFields(t *testing.T) {
 		},
 	}
 
-	files, err := a.GenerateAgent(agent)
+	result, err := a.Generate(&pivot.PivotFile{Agents: []pivot.AgentDefinition{agent}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := files[filepath.Join(baseDir, "agents", "build.toml")]
+	content := fileContent(result.Files, filepath.Join(baseDir, "agents", "build.toml"))
 	for _, want := range []string{
 		"name = 'build'",
 		"description = 'Build approved changes.'",
@@ -59,20 +70,19 @@ func TestGenerateAgentUsesCodexNativeFields(t *testing.T) {
 func TestGenerateCommandDelegatesToCodexAgentName(t *testing.T) {
 	baseDir := t.TempDir()
 	a := codex.NewAdapterWithBaseDir(baseDir, "")
-	if _, err := a.GenerateAgent(pivot.AgentDefinition{
-		ID: "code-review", Description: "Review code.", Mode: "subagent",
-		Extensions: map[string]any{"codex": map[string]any{"name": "code_reviewer"}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	files, err := a.GenerateCommand(pivot.CommandDefinition{
-		ID: "review", Description: "Review the current change.", Agent: "code-review", Template: "Find defects.",
+	result, err := a.Generate(&pivot.PivotFile{
+		Agents: []pivot.AgentDefinition{{
+			ID: "code-review", Description: "Review code.", Mode: "subagent",
+			Extensions: map[string]any{"codex": map[string]any{"name": "code_reviewer"}},
+		}},
+		Commands: []pivot.CommandDefinition{{
+			ID: "review", Description: "Review the current change.", Agent: "code-review", Template: "Find defects.",
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	content := files[filepath.Join(baseDir, "prompts", "review.md")]
+	content := fileContent(result.Files, filepath.Join(baseDir, "prompts", "review.md"))
 	for _, want := range []string{
 		`description: "Review the current change."`,
 		"Delegate this task to the `code_reviewer` custom agent.",

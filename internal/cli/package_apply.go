@@ -101,7 +101,7 @@ func RunPackagePush(opts PackagePushOptions) error {
 		return fmt.Errorf("%w for %s@%s: %s; rerun with --allow-permissions", ErrPackagePermissions, installed.Name, installed.Revision, strings.Join(grants, ", "))
 	}
 
-	preflight := func(generated map[string]map[string]string, state *diff.StateFile, adapters map[string]adapter.Adapter) error {
+	preflight := func(generated map[string][]adapter.GeneratedFile, state *diff.StateFile, adapters map[string]adapter.Adapter) error {
 		if err := rejectForeignPackageCollisions(pkg.Pivot, generated, state); err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func RunPackagePush(opts PackagePushOptions) error {
 		}
 		return nil
 	}
-	postflight := func(generated map[string]map[string]string, state *diff.StateFile) error {
+	postflight := func(generated map[string][]adapter.GeneratedFile, state *diff.StateFile) error {
 		return nil
 	}
 	return runPushAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Force, opts.Adapters, store.StateDir(installed.Name), preflight, postflight, output, os.Stderr)
@@ -299,16 +299,16 @@ func savePackageApproval(store *shenronpackage.Store, installed *shenronpackage.
 	return nil
 }
 
-func rejectForeignPackageCollisions(pf *pivot.PivotFile, generated map[string]map[string]string, state *diff.StateFile) error {
+func rejectForeignPackageCollisions(pf *pivot.PivotFile, generated map[string][]adapter.GeneratedFile, state *diff.StateFile) error {
 	for target, files := range generated {
-		for path := range files {
-			if target == "opencode" && filepath.Base(path) == "opencode.json" {
-				if err := rejectForeignOpenCodeCollisions(path, pf, state); err != nil {
+		for _, f := range files {
+			if target == "opencode" && filepath.Base(f.Path) == "opencode.json" {
+				if err := rejectForeignOpenCodeCollisions(f.Path, pf, state); err != nil {
 					return err
 				}
 				continue
 			}
-			if err := rejectForeignFileCollision(path, state); err != nil {
+			if err := rejectForeignFileCollision(f.Path, state); err != nil {
 				return err
 			}
 		}
@@ -358,10 +358,10 @@ func rejectForeignOpenCodeCollisions(path string, pf *pivot.PivotFile, state *di
 	return nil
 }
 
-func recordPackageOpenCodeOwnership(pf *pivot.PivotFile, files map[string]string, state *diff.StateFile) {
-	for path := range files {
-		if filepath.Base(path) == "opencode.json" {
-			state.SetManaged(path, packageOpenCodeManaged(pf))
+func recordPackageOpenCodeOwnership(pf *pivot.PivotFile, files []adapter.GeneratedFile, state *diff.StateFile) {
+	for _, f := range files {
+		if filepath.Base(f.Path) == "opencode.json" {
+			state.SetManaged(f.Path, packageOpenCodeManaged(pf))
 		}
 	}
 }

@@ -4,9 +4,12 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/S1933/Shenron/internal/adapter"
 	"github.com/S1933/Shenron/internal/fsutil"
 	"github.com/S1933/Shenron/internal/pivot"
 )
+
+const fileMode = 0o644
 
 // Adapter implements the Claude Code target adapter.
 type Adapter struct {
@@ -42,17 +45,45 @@ func (a *Adapter) ValidateAgent(agent pivot.AgentDefinition) error {
 	return nil
 }
 
-// GenerateAgent produces a Claude Code agent Markdown file.
-func (a *Adapter) GenerateAgent(agent pivot.AgentDefinition) (map[string]string, error) {
-	if err := a.ValidateAgent(agent); err != nil {
-		return nil, err
+// Generate produces one Markdown file per agent and command.
+func (a *Adapter) Generate(pf *pivot.PivotFile) (adapter.GenerationResult, error) {
+	var files []adapter.GeneratedFile
+
+	for _, ag := range pf.Agents {
+		if err := a.ValidateAgent(ag); err != nil {
+			return adapter.GenerationResult{}, err
+		}
+		generated, err := generateAgentFile(ag, a.pivotDir, a.baseDir)
+		if err != nil {
+			return adapter.GenerationResult{}, fmt.Errorf("generate agent %q: %w", ag.ID, err)
+		}
+		files = append(files, a.filesFrom(generated, ag.ID)...)
 	}
-	return generateAgentFile(agent, a.pivotDir, a.baseDir)
+
+	for _, cmd := range pf.Commands {
+		generated, err := generateCommandFile(cmd, a.baseDir)
+		if err != nil {
+			return adapter.GenerationResult{}, fmt.Errorf("generate command %q: %w", cmd.ID, err)
+		}
+		files = append(files, a.filesFrom(generated, cmd.ID)...)
+	}
+
+	return adapter.GenerationResult{Files: files}, nil
 }
 
-// GenerateCommand produces a Claude Code command Markdown file.
-func (a *Adapter) GenerateCommand(cmd pivot.CommandDefinition) (map[string]string, error) {
-	return generateCommandFile(cmd, a.baseDir)
+// filesFrom converts a path->content map into GeneratedFile records.
+func (a *Adapter) filesFrom(generated map[string]string, resourceID string) []adapter.GeneratedFile {
+	files := make([]adapter.GeneratedFile, 0, len(generated))
+	for path, content := range generated {
+		files = append(files, adapter.GeneratedFile{
+			Path:       path,
+			Content:    []byte(content),
+			Mode:       fileMode,
+			Adapter:    a.Name(),
+			ResourceID: resourceID,
+		})
+	}
+	return files
 }
 
 // TargetPaths returns paths this adapter writes to.
@@ -61,9 +92,4 @@ func (a *Adapter) TargetPaths() []string {
 		filepath.Join(a.baseDir, "agents"),
 		filepath.Join(a.baseDir, "commands"),
 	}
-}
-
-// MergeFile returns nil — Claude Code uses one file per agent/command.
-func (a *Adapter) MergeFile(path string, existing []byte, fragments map[string]any) ([]byte, error) {
-	return nil, nil
 }

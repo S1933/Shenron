@@ -7,16 +7,18 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/S1933/Shenron/internal/adapter"
 	"github.com/S1933/Shenron/internal/fsutil"
 	"github.com/S1933/Shenron/internal/pivot"
 	"github.com/pelletier/go-toml/v2"
 )
 
+const fileMode = 0o644
+
 // Adapter renders Shenron definitions into Codex custom-agent and custom-prompt files.
 type Adapter struct {
-	baseDir     string
-	pivotDir    string
-	nativeNames map[string]string
+	baseDir  string
+	pivotDir string
 }
 
 type agentFile struct {
@@ -34,14 +36,13 @@ type agentFile struct {
 func NewAdapter() *Adapter { return NewAdapterWithBaseDir(fsutil.CodexPath(), "") }
 
 func NewAdapterWithBaseDir(baseDir, pivotDir string) *Adapter {
-	return &Adapter{baseDir: baseDir, pivotDir: pivotDir, nativeNames: map[string]string{}}
+	return &Adapter{baseDir: baseDir, pivotDir: pivotDir}
 }
 
 func (a *Adapter) Name() string { return "codex" }
 
 func (a *Adapter) SetPivotDir(dir string) {
 	a.pivotDir = dir
-	a.nativeNames = map[string]string{}
 }
 
 func (a *Adapter) ValidateAgent(agent pivot.AgentDefinition) error {
@@ -51,53 +52,74 @@ func (a *Adapter) ValidateAgent(agent pivot.AgentDefinition) error {
 	return nil
 }
 
-func (a *Adapter) GenerateAgent(agent pivot.AgentDefinition) (map[string]string, error) {
-	if err := a.ValidateAgent(agent); err != nil {
-		return nil, err
-	}
-	nativeName := codexName(agent.ID, agent.Extensions)
-	a.nativeNames[agent.ID] = nativeName
-	instructions, err := resolveInstructions(agent, a.pivotDir)
-	if err != nil {
-		return nil, err
+// Generate renders custom-agent TOML files and custom-prompt Markdown files.
+// The pivot-id -> native-name map is built locally so a command's delegation
+// line can reference the referenced agent's resolved Codex name.
+func (a *Adapter) Generate(pf *pivot.PivotFile) (adapter.GenerationResult, error) {
+	var files []adapter.GeneratedFile
+	nativeNames := make(map[string]string, len(pf.Agents))
+
+	for _, ag := range pf.Agents {
+		if err := a.ValidateAgent(ag); err != nil {
+			return adapter.GenerationResult{}, err
+		}
+		nativeName := codexName(ag.ID, ag.Extensions)
+		nativeNames[ag.ID] = nativeName
+		instructions, err := resolveInstructions(ag, a.pivotDir)
+		if err != nil {
+			return adapter.GenerationResult{}, fmt.Errorf("generate agent %q: %w", ag.ID, err)
+		}
+
+		native := agentFile{
+			Name: nativeName, Description: ag.Description, Model: resolveModel(ag),
+			ModelReasoningEffort: codexString(ag.Extensions, "modelReasoningEffort"),
+			SandboxMode:          resolveSandbox(ag), ApprovalPolicy: resolveApproval(ag),
+			WebSearch: resolveWebSearch(ag), NicknameCandidates: codexStrings(ag.Extensions, "nicknameCandidates"),
+			DeveloperInstructions: instructions,
+		}
+		data, err := toml.Marshal(native)
+		if err != nil {
+			return adapter.GenerationResult{}, fmt.Errorf("marshal Codex agent %q: %w", ag.ID, err)
+		}
+		files = append(files, adapter.GeneratedFile{
+			Path:       filepath.Join(a.baseDir, "agents", nativeName+".toml"),
+			Content:    data,
+			Mode:       fileMode,
+			Adapter:    a.Name(),
+			ResourceID: ag.ID,
+		})
 	}
 
-	native := agentFile{
-		Name: nativeName, Description: agent.Description, Model: resolveModel(agent),
-		ModelReasoningEffort: codexString(agent.Extensions, "modelReasoningEffort"),
-		SandboxMode:          resolveSandbox(agent), ApprovalPolicy: resolveApproval(agent),
-		WebSearch: resolveWebSearch(agent), NicknameCandidates: codexStrings(agent.Extensions, "nicknameCandidates"),
-		DeveloperInstructions: instructions,
+	for _, cmd := range pf.Commands {
+		nativeAgent := cmd.Agent
+		if name, ok := nativeNames[cmd.Agent]; ok {
+			nativeAgent = name
+		}
+		var content strings.Builder
+		content.WriteString("---\ndescription: ")
+		content.WriteString(strconv.Quote(cmd.Description))
+		content.WriteString("\n---\n\n")
+		if nativeAgent != "" {
+			content.WriteString("Delegate this task to the `")
+			content.WriteString(nativeAgent)
+			content.WriteString("` custom agent.\n\n")
+		}
+		content.WriteString(cmd.Template)
+		files = append(files, adapter.GeneratedFile{
+			Path:       filepath.Join(a.baseDir, "prompts", codexName(cmd.ID, cmd.Extensions)+".md"),
+			Content:    []byte(content.String()),
+			Mode:       fileMode,
+			Adapter:    a.Name(),
+			ResourceID: cmd.ID,
+		})
 	}
-	data, err := toml.Marshal(native)
-	if err != nil {
-		return nil, fmt.Errorf("marshal Codex agent: %w", err)
-	}
-	return map[string]string{filepath.Join(a.baseDir, "agents", nativeName+".toml"): string(data)}, nil
-}
 
-func (a *Adapter) GenerateCommand(cmd pivot.CommandDefinition) (map[string]string, error) {
-	nativeAgent := cmd.Agent
-	if name, ok := a.nativeNames[cmd.Agent]; ok {
-		nativeAgent = name
-	}
-	var content strings.Builder
-	content.WriteString("---\ndescription: ")
-	content.WriteString(strconv.Quote(cmd.Description))
-	content.WriteString("\n---\n\n")
-	if nativeAgent != "" {
-		content.WriteString("Delegate this task to the `")
-		content.WriteString(nativeAgent)
-		content.WriteString("` custom agent.\n\n")
-	}
-	content.WriteString(cmd.Template)
-	return map[string]string{filepath.Join(a.baseDir, "prompts", codexName(cmd.ID, cmd.Extensions)+".md"): content.String()}, nil
+	return adapter.GenerationResult{Files: files}, nil
 }
 
 func (a *Adapter) TargetPaths() []string {
 	return []string{filepath.Join(a.baseDir, "agents"), filepath.Join(a.baseDir, "prompts")}
 }
-func (a *Adapter) MergeFile(string, []byte, map[string]any) ([]byte, error) { return nil, nil }
 
 func resolveInstructions(agent pivot.AgentDefinition, pivotDir string) (string, error) {
 	instructions := agent.SystemPrompt

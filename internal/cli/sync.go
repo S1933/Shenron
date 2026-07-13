@@ -12,78 +12,33 @@ import (
 	"github.com/S1933/Shenron/internal/pivot"
 )
 
-type pivotDirSetter interface {
-	SetPivotDir(string)
-}
+const configFileMode = 0o644
 
-type fragmentAccumulator interface {
-	ResetFragments()
-	Fragments() map[string]any
-	ConfigPath() string
-}
-
-type managedPruner interface {
-	PruneManaged(path string, existing []byte, managed map[string][]string, fragments map[string]any) ([]byte, error)
-}
-
-// Generate produces the file map for each adapter from a parsed pivot file.
-// state may be nil; when set, adapters that implement managedPruner use it to
-// prune leaves they previously managed but the pivot no longer generates.
-func Generate(pf *pivot.PivotFile, pivotDir string, adapters map[string]adapter.Adapter, state *diff.StateFile) (map[string]map[string]string, error) {
-	out := make(map[string]map[string]string, len(adapters))
+// Generate produces the generated files for each adapter from a parsed pivot
+// file. state may be nil; when set, adapters that implement adapter.ManagedPruner
+// use it to prune leaves they previously managed but the pivot no longer
+// generates.
+func Generate(pf *pivot.PivotFile, pivotDir string, adapters map[string]adapter.Adapter, state *diff.StateFile) (map[string][]adapter.GeneratedFile, error) {
+	out := make(map[string][]adapter.GeneratedFile, len(adapters))
 
 	for name, adpt := range adapters {
-		if setter, ok := adpt.(pivotDirSetter); ok {
+		if setter, ok := adpt.(adapter.PivotDirectoryAware); ok {
 			setter.SetPivotDir(pivotDir)
 		}
-		if acc, ok := adpt.(fragmentAccumulator); ok {
-			acc.ResetFragments()
+
+		result, err := adpt.Generate(pf)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
 		}
+		files := result.Files
 
-		files := make(map[string]string)
-
-		for _, agent := range pf.Agents {
-			agentFiles, err := adpt.GenerateAgent(agent)
+		if merger, ok := adpt.(adapter.MergingAdapter); ok {
+			configFile, err := mergeConfig(name, merger, adpt, result.Fragments, state)
 			if err != nil {
-				return nil, fmt.Errorf("%s: generate agent %q: %w", name, agent.ID, err)
+				return nil, err
 			}
-			for path, content := range agentFiles {
-				files[path] = content
-			}
-		}
-
-		for _, cmd := range pf.Commands {
-			cmdFiles, err := adpt.GenerateCommand(cmd)
-			if err != nil {
-				return nil, fmt.Errorf("%s: generate command %q: %w", name, cmd.ID, err)
-			}
-			for path, content := range cmdFiles {
-				files[path] = content
-			}
-		}
-
-		if acc, ok := adpt.(fragmentAccumulator); ok {
-			configPath := acc.ConfigPath()
-			var existing []byte
-			data, err := os.ReadFile(configPath)
-			if err != nil {
-				if !os.IsNotExist(err) {
-					return nil, fmt.Errorf("%s: read %s: %w", name, filepath.Base(configPath), err)
-				}
-			} else {
-				existing = data
-			}
-			var merged []byte
-			if pruner, ok := adpt.(managedPruner); ok && state != nil {
-				merged, err = pruner.PruneManaged(configPath, existing, state.Managed(configPath), acc.Fragments())
-			} else {
-				merged, err = adpt.MergeFile(configPath, existing, acc.Fragments())
-			}
-			if err != nil {
-				return nil, fmt.Errorf("%s: merge %s: %w", name, filepath.Base(configPath), err)
-			}
-			if merged != nil {
-				files[configPath] = string(merged)
+			if configFile != nil {
+				files = append(files, *configFile)
 			}
 		}
 
@@ -93,10 +48,46 @@ func Generate(pf *pivot.PivotFile, pivotDir string, adapters map[string]adapter.
 	return out, nil
 }
 
-// Ensure opencode.Adapter satisfies optional interfaces at compile time.
+// mergeConfig folds accumulated fragments into the adapter's shared config file,
+// pruning previously-managed leaves first when the adapter and state support it.
+func mergeConfig(name string, merger adapter.MergingAdapter, adpt adapter.Adapter, fragments map[string]any, state *diff.StateFile) (*adapter.GeneratedFile, error) {
+	configPath := merger.ConfigPath()
+
+	var existing []byte
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("%s: read %s: %w", name, filepath.Base(configPath), err)
+		}
+	} else {
+		existing = data
+	}
+
+	var merged []byte
+	if pruner, ok := adpt.(adapter.ManagedPruner); ok && state != nil {
+		merged, err = pruner.PruneManaged(configPath, existing, state.Managed(configPath), fragments)
+	} else {
+		merged, err = merger.MergeFile(configPath, existing, fragments)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: merge %s: %w", name, filepath.Base(configPath), err)
+	}
+	if merged == nil {
+		return nil, nil
+	}
+
+	return &adapter.GeneratedFile{
+		Path:    configPath,
+		Content: merged,
+		Mode:    configFileMode,
+		Adapter: name,
+	}, nil
+}
+
+// Ensure adapters satisfy the optional capability interfaces at compile time.
 var (
-	_ pivotDirSetter      = (*claude.Adapter)(nil)
-	_ pivotDirSetter      = (*opencode.Adapter)(nil)
-	_ fragmentAccumulator = (*opencode.Adapter)(nil)
-	_ managedPruner       = (*opencode.Adapter)(nil)
+	_ adapter.PivotDirectoryAware = (*claude.Adapter)(nil)
+	_ adapter.PivotDirectoryAware = (*opencode.Adapter)(nil)
+	_ adapter.MergingAdapter      = (*opencode.Adapter)(nil)
+	_ adapter.ManagedPruner       = (*opencode.Adapter)(nil)
 )

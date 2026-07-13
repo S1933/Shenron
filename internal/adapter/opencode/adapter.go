@@ -8,34 +8,28 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/S1933/Shenron/internal/adapter"
 	"github.com/S1933/Shenron/internal/fsutil"
 	"github.com/S1933/Shenron/internal/pivot"
 )
 
 const configFileName = "opencode.json"
+const fileMode = 0o644
 
 // Adapter implements the OpenCode target adapter.
 type Adapter struct {
-	baseDir   string
-	pivotDir  string
-	fragments map[string]any
+	baseDir  string
+	pivotDir string
 }
 
 // NewAdapter creates an OpenCode adapter writing to the default config directory.
 func NewAdapter() *Adapter {
-	return &Adapter{
-		baseDir:   fsutil.OpenCodePath(),
-		fragments: make(map[string]any),
-	}
+	return &Adapter{baseDir: fsutil.OpenCodePath()}
 }
 
 // NewAdapterWithBaseDir creates an adapter with a custom base directory (for tests).
 func NewAdapterWithBaseDir(baseDir, pivotDir string) *Adapter {
-	return &Adapter{
-		baseDir:   baseDir,
-		pivotDir:  pivotDir,
-		fragments: make(map[string]any),
-	}
+	return &Adapter{baseDir: baseDir, pivotDir: pivotDir}
 }
 
 // SetPivotDir sets the pivot directory for promptFile resolution.
@@ -56,48 +50,50 @@ func (a *Adapter) ValidateAgent(agent pivot.AgentDefinition) error {
 	return nil
 }
 
-// Fragments returns accumulated JSON fragments for opencode.json merge.
-func (a *Adapter) Fragments() map[string]any {
-	return a.fragments
-}
+// Generate produces prompt/command body files and accumulates the JSON
+// fragments that a later MergeFile/PruneManaged folds into opencode.json.
+// Fragments are collected in a local map, so the adapter holds no state
+// between calls.
+func (a *Adapter) Generate(pf *pivot.PivotFile) (adapter.GenerationResult, error) {
+	var files []adapter.GeneratedFile
+	fragments := make(map[string]any)
 
-// ResetFragments clears accumulated fragments before a new generation pass.
-func (a *Adapter) ResetFragments() {
-	a.fragments = make(map[string]any)
-}
-
-// GenerateAgent produces prompt files and accumulates the JSON fragment.
-func (a *Adapter) GenerateAgent(agent pivot.AgentDefinition) (map[string]string, error) {
-	if err := a.ValidateAgent(agent); err != nil {
-		return nil, err
+	for _, ag := range pf.Agents {
+		if err := a.ValidateAgent(ag); err != nil {
+			return adapter.GenerationResult{}, err
+		}
+		fragment, promptRel, promptContent, err := GenerateAgentFragment(ag, a.pivotDir)
+		if err != nil {
+			return adapter.GenerationResult{}, fmt.Errorf("generate agent %q: %w", ag.ID, err)
+		}
+		fragments["agent."+ag.ID] = fragment
+		if promptContent != "" || ag.SystemPrompt != "" || ag.PromptFile != "" {
+			files = append(files, adapter.GeneratedFile{
+				Path:       filepath.Join(a.baseDir, promptRel),
+				Content:    []byte(promptContent),
+				Mode:       fileMode,
+				Adapter:    a.Name(),
+				ResourceID: ag.ID,
+			})
+		}
 	}
 
-	fragment, promptRel, promptContent, err := GenerateAgentFragment(agent, a.pivotDir)
-	if err != nil {
-		return nil, err
+	for _, cmd := range pf.Commands {
+		fragment, cmdRel, cmdContent, err := GenerateCommandFragment(cmd)
+		if err != nil {
+			return adapter.GenerationResult{}, fmt.Errorf("generate command %q: %w", cmd.ID, err)
+		}
+		fragments["command."+cmd.ID] = fragment
+		files = append(files, adapter.GeneratedFile{
+			Path:       filepath.Join(a.baseDir, cmdRel),
+			Content:    []byte(cmdContent),
+			Mode:       fileMode,
+			Adapter:    a.Name(),
+			ResourceID: cmd.ID,
+		})
 	}
 
-	a.fragments["agent."+agent.ID] = fragment
-
-	files := map[string]string{}
-	if promptContent != "" || agent.SystemPrompt != "" || agent.PromptFile != "" {
-		files[filepath.Join(a.baseDir, promptRel)] = promptContent
-	}
-	return files, nil
-}
-
-// GenerateCommand produces command template files and accumulates the JSON fragment.
-func (a *Adapter) GenerateCommand(cmd pivot.CommandDefinition) (map[string]string, error) {
-	fragment, cmdRel, cmdContent, err := GenerateCommandFragment(cmd)
-	if err != nil {
-		return nil, err
-	}
-
-	a.fragments["command."+cmd.ID] = fragment
-
-	return map[string]string{
-		filepath.Join(a.baseDir, cmdRel): cmdContent,
-	}, nil
+	return adapter.GenerationResult{Files: files, Fragments: fragments}, nil
 }
 
 // TargetPaths returns paths this adapter writes to.
