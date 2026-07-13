@@ -315,10 +315,11 @@ commands: []
 	base := filepath.Join(t.TempDir(), "opencode")
 	adapters := map[string]adapter.Adapter{"opencode": opencode.NewAdapterWithBaseDir(base, "")}
 
-	// Make the prompts directory unwritable so the push writes opencode.json
-	// (sorts first) and then fails writing the prompt file, simulating a
-	// crash mid-push: Managed must already be persisted by then, before
-	// postflight or the final SaveState ever run.
+	// Make the prompts directory unwritable so staging the prompt file fails,
+	// simulating a crash mid-push. Two invariants must hold: (1) Managed is
+	// persisted before any native write, so a re-push does not collide on the
+	// package's own opencode.json entries; (2) the write batch is atomic — a
+	// failure staging one file leaves none of the batch on disk.
 	promptsDir := filepath.Join(base, "prompts")
 	if err := os.MkdirAll(promptsDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -331,17 +332,25 @@ commands: []
 	if err := cli.RunPackagePush(cli.PackagePushOptions{Store: store, Name: "acme-reviewers", Adapters: adapters}); err == nil {
 		t.Fatal("expected first push to fail writing the read-only prompts directory")
 	}
-	if _, err := os.Stat(filepath.Join(base, "opencode.json")); err != nil {
-		t.Fatalf("opencode.json should have been written before the interruption: %v", err)
+	// Atomicity: opencode.json was staged but never committed, so nothing lands.
+	if _, err := os.Stat(filepath.Join(base, "opencode.json")); !os.IsNotExist(err) {
+		t.Fatalf("no file should be committed when the batch fails, got: %v", err)
 	}
 
 	if err := os.Chmod(promptsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Re-push must NOT raise ErrPackageCollision on its own opencode.json entries.
+	// Re-push must NOT raise ErrPackageCollision on its own opencode.json entries,
+	// and must complete the write this time.
 	if err := cli.RunPackagePush(cli.PackagePushOptions{Store: store, Name: "acme-reviewers", Adapters: adapters}); err != nil {
 		t.Fatalf("re-push after simulated interrupt should succeed, got: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "opencode.json")); err != nil {
+		t.Fatalf("opencode.json should exist after successful re-push: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "prompts", "build.md")); err != nil {
+		t.Fatalf("prompt file should exist after successful re-push: %v", err)
 	}
 }
 

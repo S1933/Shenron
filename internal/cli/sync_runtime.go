@@ -146,6 +146,20 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 		stderr = os.Stderr
 	}
 
+	// Complete any push interrupted after its journal was written, before we
+	// read current on-disk state for diffing (roll-forward recovery).
+	recoverDir := stateDir
+	if recoverDir == "" {
+		if path, derr := pivot.Discover(configPath); derr == nil {
+			recoverDir = filepath.Dir(path)
+		}
+	}
+	if recoverDir != "" {
+		if err := fsutil.RecoverTransaction(recoverDir); err != nil {
+			return fmt.Errorf("recover interrupted push: %w", err)
+		}
+	}
+
 	pivotDir, generated, state, adapters, err := prepareSyncAt(configPath, target, adapters, stateDir)
 	if err != nil {
 		return err
@@ -186,12 +200,16 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 
 	printOrphanWarnings(stderr, diff.OrphanedOnly(results))
 
-	wroteAny := false
+	// Stage every changed file, then commit the batch through a journalled
+	// transaction so a crash mid-write can be completed on the next push.
+	tx := fsutil.NewTransaction(stateDir)
+	var logs []writeLog
 	for _, name := range sortedAdapterNames(generated) {
 		files := generated[name]
 		byPath := indexByPath(files)
 		adapterResults, err := diff.ComputeDiffs(contentMap(files), state, scope)
 		if err != nil {
+			tx.Discard()
 			return err
 		}
 		adapterResults = diff.FilterOrphaned(adapterResults)
@@ -200,17 +218,25 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 			switch r.Status {
 			case diff.StatusCreated, diff.StatusModified, diff.StatusManuallyModified:
 				gf := byPath[r.Path]
-				if err := fsutil.WriteFileAtomic(r.Path, gf.Content, gf.Mode); err != nil {
-					return fmt.Errorf("write %s: %w", r.Path, err)
+				if err := tx.Stage(gf.Path, gf.Content, gf.Mode); err != nil {
+					tx.Discard()
+					return fmt.Errorf("stage %s: %w", r.Path, err)
 				}
 				state.SetFile(r.Path, name, gf.Content)
-				fmt.Fprintf(stdout, "[%s] wrote %s (%s)\n", name, r.Path, diffStatusName(r.Status))
-				wroteAny = true
+				logs = append(logs, writeLog{name: name, path: r.Path, status: r.Status})
 			case diff.StatusUnchanged:
 				state.SetFile(r.Path, name, []byte(r.NewContent))
 			}
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit push: %w", err)
+	}
+	for _, l := range logs {
+		fmt.Fprintf(stdout, "[%s] wrote %s (%s)\n", l.name, l.path, diffStatusName(l.status))
+	}
+	wroteAny := len(logs) > 0
 	if postflight != nil {
 		if err := postflight(generated, state); err != nil {
 			return err
@@ -228,6 +254,14 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 	}
 
 	return nil
+}
+
+// writeLog records a staged write so its confirmation line can be printed only
+// after the transaction commits.
+type writeLog struct {
+	name   string
+	path   string
+	status diff.DiffStatus
 }
 
 func diffStatusName(status diff.DiffStatus) string {
