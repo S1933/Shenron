@@ -29,11 +29,16 @@ type DiffOptions struct {
 	ConfigPath string
 	Target     string
 	Adapters   map[string]adapter.Adapter
+	Format     string // "text" (default) or "json"
 }
 
 // RunDiff shows differences between pivot and native configs.
 func RunDiff(opts DiffOptions) error {
-	return runDiffAt(opts.ConfigPath, opts.Target, opts.Adapters, "", os.Stdout, os.Stderr)
+	format, err := parseOutputFormat(opts.Format)
+	if err != nil {
+		return err
+	}
+	return runDiffAt(opts.ConfigPath, opts.Target, opts.Adapters, "", format, os.Stdout, os.Stderr)
 }
 
 // CaptureOutput runs fn while capturing stdout and stderr separately.
@@ -68,21 +73,26 @@ type PushOptions struct {
 	Target     string
 	Force      bool
 	Adapters   map[string]adapter.Adapter
+	Format     string // "text" (default) or "json"
 }
 
 // RunPush pushes pivot config to native CLI configs.
 func RunPush(opts PushOptions) error {
-	return runPushAt(opts.ConfigPath, opts.Target, opts.Force, opts.Adapters, "", nil, nil, os.Stdout, os.Stderr)
+	format, err := parseOutputFormat(opts.Format)
+	if err != nil {
+		return err
+	}
+	return runPushAt(opts.ConfigPath, opts.Target, opts.Force, opts.Adapters, "", format, nil, nil, os.Stdout, os.Stderr)
 }
 
-type pushPreflight func(generated map[string]map[string]string, state *diff.StateFile, adapters map[string]adapter.Adapter) error
-type pushPostflight func(generated map[string]map[string]string, state *diff.StateFile) error
+type pushPreflight func(generated map[string][]adapter.GeneratedFile, state *diff.StateFile, adapters map[string]adapter.Adapter) error
+type pushPostflight func(generated map[string][]adapter.GeneratedFile, state *diff.StateFile) error
 
 // runDiffAt and runPushAt are the library entry points used by both the
 // public Go API and the package flow. They accept an explicit stateDir so the
 // package flow can keep its state under ~/.shenron/packages/state/<name>/.
 
-func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string, stdout, stderr io.Writer) error {
+func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string, format outputFormat, stdout, stderr io.Writer) error {
 	if stdout == nil {
 		stdout = os.Stdout
 	}
@@ -96,12 +106,21 @@ func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, s
 	}
 
 	scope := buildOrphanScope(resolved)
+
+	if format == formatJSON {
+		report, err := buildDiffReport(generated, state, scope)
+		if err != nil {
+			return err
+		}
+		return writeJSON(stdout, report)
+	}
+
 	colored := diff.SupportsColor()
 	hasChanges := false
 
 	for _, name := range sortedAdapterNames(generated) {
 		files := generated[name]
-		results, err := diff.ComputeDiffs(files, state, scope)
+		results, err := diff.ComputeDiffs(contentMap(files), state, scope)
 		if err != nil {
 			return err
 		}
@@ -138,12 +157,26 @@ func runDiffAt(configPath, target string, adapters map[string]adapter.Adapter, s
 	return nil
 }
 
-func runPushAt(configPath, target string, force bool, adapters map[string]adapter.Adapter, stateDir string, preflight pushPreflight, postflight pushPostflight, stdout, stderr io.Writer) error {
+func runPushAt(configPath, target string, force bool, adapters map[string]adapter.Adapter, stateDir string, format outputFormat, preflight pushPreflight, postflight pushPostflight, stdout, stderr io.Writer) error {
 	if stdout == nil {
 		stdout = os.Stdout
 	}
 	if stderr == nil {
 		stderr = os.Stderr
+	}
+
+	// Complete any push interrupted after its journal was written, before we
+	// read current on-disk state for diffing (roll-forward recovery).
+	recoverDir := stateDir
+	if recoverDir == "" {
+		if path, derr := pivot.Discover(configPath); derr == nil {
+			recoverDir = filepath.Dir(path)
+		}
+	}
+	if recoverDir != "" {
+		if err := fsutil.RecoverTransaction(recoverDir); err != nil {
+			return fmt.Errorf("recover interrupted push: %w", err)
+		}
 	}
 
 	pivotDir, generated, state, adapters, err := prepareSyncAt(configPath, target, adapters, stateDir)
@@ -184,13 +217,21 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 		return fmt.Errorf("%w: %s", ErrManualEdits, strings.TrimSpace(b.String()))
 	}
 
-	printOrphanWarnings(stderr, diff.OrphanedOnly(results))
+	orphans := diff.OrphanedOnly(results)
+	if format != formatJSON {
+		printOrphanWarnings(stderr, orphans)
+	}
 
-	wroteAny := false
+	// Stage every changed file, then commit the batch through a journalled
+	// transaction so a crash mid-write can be completed on the next push.
+	tx := fsutil.NewTransaction(stateDir)
+	var logs []writeLog
 	for _, name := range sortedAdapterNames(generated) {
 		files := generated[name]
-		adapterResults, err := diff.ComputeDiffs(files, state, scope)
+		byPath := indexByPath(files)
+		adapterResults, err := diff.ComputeDiffs(contentMap(files), state, scope)
 		if err != nil {
+			tx.Discard()
 			return err
 		}
 		adapterResults = diff.FilterOrphaned(adapterResults)
@@ -198,18 +239,23 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 		for _, r := range adapterResults {
 			switch r.Status {
 			case diff.StatusCreated, diff.StatusModified, diff.StatusManuallyModified:
-				content := files[r.Path]
-				if err := fsutil.WriteFileAtomic(r.Path, []byte(content), 0o644); err != nil {
-					return fmt.Errorf("write %s: %w", r.Path, err)
+				gf := byPath[r.Path]
+				if err := tx.Stage(gf.Path, gf.Content, gf.Mode); err != nil {
+					tx.Discard()
+					return fmt.Errorf("stage %s: %w", r.Path, err)
 				}
-				state.SetFile(r.Path, name, []byte(content))
-				fmt.Fprintf(stdout, "[%s] wrote %s (%s)\n", name, r.Path, diffStatusName(r.Status))
-				wroteAny = true
+				state.SetFile(r.Path, name, gf.Content)
+				logs = append(logs, writeLog{name: name, path: r.Path, status: r.Status})
 			case diff.StatusUnchanged:
 				state.SetFile(r.Path, name, []byte(r.NewContent))
 			}
 		}
 	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit push: %w", err)
+	}
+	wroteAny := len(logs) > 0
 	if postflight != nil {
 		if err := postflight(generated, state); err != nil {
 			return err
@@ -220,6 +266,13 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 		return err
 	}
 
+	if format == formatJSON {
+		return writeJSON(stdout, buildPushReport(logs, orphans, generated))
+	}
+
+	for _, l := range logs {
+		fmt.Fprintf(stdout, "[%s] wrote %s (%s)\n", l.name, l.path, diffStatusName(l.status))
+	}
 	if !wroteAny {
 		fmt.Fprintln(stdout, "No changes")
 	} else {
@@ -227,6 +280,14 @@ func runPushAt(configPath, target string, force bool, adapters map[string]adapte
 	}
 
 	return nil
+}
+
+// writeLog records a staged write so its confirmation line can be printed only
+// after the transaction commits.
+type writeLog struct {
+	name   string
+	path   string
+	status diff.DiffStatus
 }
 
 func diffStatusName(status diff.DiffStatus) string {
@@ -250,17 +311,39 @@ func printOrphanWarnings(stderr io.Writer, results []diff.DiffResult) {
 	}
 }
 
-func mergeGenerated(generated map[string]map[string]string) map[string]string {
+// mergeGenerated flattens every adapter's files into a single path->content map
+// for whole-tree diff and orphan detection.
+func mergeGenerated(generated map[string][]adapter.GeneratedFile) map[string]string {
 	merged := make(map[string]string)
 	for _, files := range generated {
-		for path, content := range files {
-			merged[path] = content
+		for _, f := range files {
+			merged[f.Path] = string(f.Content)
 		}
 	}
 	return merged
 }
 
-func prepareSyncAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string) (pivotDir string, generated map[string]map[string]string, state *diff.StateFile, resolved map[string]adapter.Adapter, err error) {
+// contentMap projects a slice of generated files onto a path->content map for
+// the diff engine.
+func contentMap(files []adapter.GeneratedFile) map[string]string {
+	out := make(map[string]string, len(files))
+	for _, f := range files {
+		out[f.Path] = string(f.Content)
+	}
+	return out
+}
+
+// indexByPath keys generated files by their destination path so the write loop
+// can recover each file's mode and content.
+func indexByPath(files []adapter.GeneratedFile) map[string]adapter.GeneratedFile {
+	out := make(map[string]adapter.GeneratedFile, len(files))
+	for _, f := range files {
+		out[f.Path] = f
+	}
+	return out
+}
+
+func prepareSyncAt(configPath, target string, adapters map[string]adapter.Adapter, stateDir string) (pivotDir string, generated map[string][]adapter.GeneratedFile, state *diff.StateFile, resolved map[string]adapter.Adapter, err error) {
 	path, err := pivot.Discover(configPath)
 	if err != nil {
 		return "", nil, nil, nil, err
@@ -314,7 +397,7 @@ func buildOrphanScope(adapters map[string]adapter.Adapter) *diff.OrphanScope {
 	return scope
 }
 
-func sortedAdapterNames(generated map[string]map[string]string) []string {
+func sortedAdapterNames(generated map[string][]adapter.GeneratedFile) []string {
 	names := make([]string, 0, len(generated))
 	for name := range generated {
 		names = append(names, name)

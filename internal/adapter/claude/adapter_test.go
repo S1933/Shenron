@@ -375,17 +375,6 @@ func TestPromptFile(t *testing.T) {
 	}
 }
 
-func TestAdapterMergeFileReturnsNil(t *testing.T) {
-	a := claude.NewAdapter()
-	out, err := a.MergeFile("agents/build.md", []byte("x"), map[string]any{"a": 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out != nil {
-		t.Errorf("expected nil, got %q", out)
-	}
-}
-
 func TestValidateAgent(t *testing.T) {
 	a := claude.NewAdapter()
 	err := a.ValidateAgent(pivot.AgentDefinition{ID: "x", Mode: "invalid"})

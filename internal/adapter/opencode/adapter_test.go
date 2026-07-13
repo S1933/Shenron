@@ -438,17 +438,40 @@ func TestAdapterGenerateAgentIntegration(t *testing.T) {
 	pf, pivotDir := testPivot(t)
 	a := opencode.NewAdapterWithBaseDir(t.TempDir(), pivotDir)
 
-	files, err := a.GenerateAgent(pf.Agents[0])
+	result, err := a.Generate(&pivot.PivotFile{Agents: []pivot.AgentDefinition{pf.Agents[0]}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(files) != 1 {
-		t.Fatalf("expected 1 file, got %d", len(files))
+	if len(result.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(result.Files))
 	}
 
-	fragments := a.Fragments()
-	if _, ok := fragments["agent.build"]; !ok {
+	if _, ok := result.Fragments["agent.build"]; !ok {
 		t.Error("missing agent.build fragment")
+	}
+}
+
+// TestGenerateIsReentrant guards the removal of the adapter's mutable fragment
+// state: generating twice on the same instance must yield identical results,
+// with no fragments accumulating across calls.
+func TestGenerateIsReentrant(t *testing.T) {
+	pf, pivotDir := testPivot(t)
+	a := opencode.NewAdapterWithBaseDir(t.TempDir(), pivotDir)
+
+	first, err := a.Generate(pf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := a.Generate(pf)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(first.Fragments) != len(second.Fragments) {
+		t.Fatalf("fragments accumulated across calls: %d then %d", len(first.Fragments), len(second.Fragments))
+	}
+	if len(first.Files) != len(second.Files) {
+		t.Fatalf("file count differs across calls: %d then %d", len(first.Files), len(second.Files))
 	}
 }
 

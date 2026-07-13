@@ -89,6 +89,8 @@ reports `No changes` for each synchronized target.
 | `shenron update <name>` | Validate and replace an installed snapshot from a new source or ref. |
 | `shenron diff <name>` | Show a package's native diff plus its permission grants and missing skills. |
 | `shenron push <name>` | Generate and atomically write a package's native files, then update its state. |
+| `shenron doctor` | Check tool paths, snapshot-cache integrity, sync state, and pending permission approvals. |
+| `shenron explain <name> --target <tool>` | Preview the native files a package translates into for one target, without writing. |
 
 Common flags:
 
@@ -103,6 +105,9 @@ Common flags:
 - `push --allow-permissions` approves the package revision's declared
   permission grants; the approval is bound to the installed revision and its
   permission digest.
+- `diff --output json` and `push --output json` emit a machine-readable
+  report on stdout (files with their adapter, status, and resource id, plus
+  any orphaned paths); human diagnostics stay on stderr.
 
 ## Pivot file
 
@@ -334,9 +339,12 @@ Shenron upserts pivot agents and commands into the nested `agent` and
 preserved, and existing key order is retained where possible. The JSON document
 is parsed and serialized again, so byte-for-byte formatting is not guaranteed.
 
-The merge is deliberately upsert-only. Removing an agent or command from the
-pivot does not delete its nested OpenCode entry; remove stale JSON entries by
-hand. Standalone managed files that are no longer generated can be reported as
+For `shenron push`, the merge is upsert-only on nested entries: removing an
+agent or command from the pivot does not delete its nested OpenCode entry, so
+remove stale JSON entries by hand. (The package apply flow goes further — it
+tracks the entries it owns in `.shenron-state.json` and prunes owned entries
+that leave the pivot, while preserving native-only entries you added by hand.)
+Standalone managed files that are no longer generated can be reported as
 orphaned, but Shenron still leaves deletion to you.
 
 ### Manual-edit protection

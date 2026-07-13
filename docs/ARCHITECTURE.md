@@ -251,8 +251,19 @@ merge. Its `orderedObject` implementation preserves existing key order and raw
 values while upserting managed `agent` and `command` entries. Unrelated
 top-level keys and native-only nested entries survive the merge.
 
-OpenCode synchronization is deliberately upsert-only. Removing an item from the
-pivot does not remove the corresponding nested entry from `opencode.json`.
+Nested-entry pruning depends on ownership tracking, so the two write flows
+differ:
+
+- The **package apply flow** records the `agent`/`command` leaves shenron writes
+  (in `.shenron-state.json` under `managed`). A later apply then uses the
+  `ManagedPruner` capability (`PruneManaged`) to remove owned leaves that left
+  the pivot, while preserving native-only entries and unrelated top-level keys.
+- The **standalone `shenron push` flow** does not record per-leaf ownership, so
+  it is upsert-only for nested `opencode.json` entries: removing an item from
+  the pivot leaves its nested entry in place.
+
+In both flows, standalone managed files (prompt/command bodies) that are no
+longer generated are reported as orphaned but never deleted.
 
 ### Codex
 

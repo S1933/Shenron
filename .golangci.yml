@@ -1,0 +1,13 @@
+# golangci-lint v2 configuration.
+# Pinned explicitly so the enabled linter set does not drift with tool upgrades.
+version: "2"
+
+linters:
+  # Standard set: errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  exclusions:
+    generated: lax
+    presets:
+      # Allow unchecked writes to os.Stdout/os.Stderr and similar
+      # fmt.Fprint* calls, matching the v1 default behavior for CLI output.
+      - std-error-handling

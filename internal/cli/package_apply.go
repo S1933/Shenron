@@ -36,6 +36,7 @@ type PackageDiffOptions struct {
 	Target    string
 	Adapters  map[string]adapter.Adapter
 	SkillsDir string
+	Format    string // "text" (default) or "json"
 	Output    io.Writer
 }
 
@@ -48,6 +49,7 @@ type PackagePushOptions struct {
 	AllowPermissions bool
 	Adapters         map[string]adapter.Adapter
 	SkillsDir        string
+	Format           string // "text" (default) or "json"
 	Output           io.Writer
 }
 
@@ -59,31 +61,49 @@ type packageApproval struct {
 // RunPackageDiff shows a package's target diff and reports every permission
 // grant and missing package skill without modifying native configuration.
 func RunPackageDiff(opts PackageDiffOptions) error {
+	format, err := parseOutputFormat(opts.Format)
+	if err != nil {
+		return err
+	}
 	installed, pkg, err := packageStore(opts.Store).Load(opts.Name)
 	if err != nil {
 		return err
 	}
 	output := packageOutput(opts.Output)
+	// Keep stdout pure JSON: send the human requirements preamble to stderr.
+	preamble := output
+	if format == formatJSON {
+		preamble = os.Stderr
+	}
 	required, optional := missingPackageSkills(pkg.Manifest.Skills, opts.SkillsDir)
-	if err := printPackageRequirements(output, permissionGrants(pkg.Pivot), required, optional); err != nil {
+	if err := printPackageRequirements(preamble, permissionGrants(pkg.Pivot), required, optional); err != nil {
 		return err
 	}
-	return runDiffAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Adapters, packageStore(opts.Store).StateDir(installed.Name), output, os.Stderr)
+	return runDiffAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Adapters, packageStore(opts.Store).StateDir(installed.Name), format, output, os.Stderr)
 }
 
 // RunPackagePush applies exactly one installed package. Package state and
 // permission approvals are deliberately stored alongside the package cache,
 // never inside its immutable pivot snapshot.
 func RunPackagePush(opts PackagePushOptions) error {
+	format, err := parseOutputFormat(opts.Format)
+	if err != nil {
+		return err
+	}
 	store := packageStore(opts.Store)
 	installed, pkg, err := store.Load(opts.Name)
 	if err != nil {
 		return err
 	}
 	output := packageOutput(opts.Output)
+	// Keep stdout pure JSON: warnings go to stderr in JSON mode.
+	warnOut := output
+	if format == formatJSON {
+		warnOut = os.Stderr
+	}
 	required, optional := missingPackageSkills(pkg.Manifest.Skills, opts.SkillsDir)
 	if len(optional) > 0 {
-		if _, err := fmt.Fprintf(output, "warning: optional package skills unavailable: %s\n", strings.Join(optional, ", ")); err != nil {
+		if _, err := fmt.Fprintf(warnOut, "warning: optional package skills unavailable: %s\n", strings.Join(optional, ", ")); err != nil {
 			return err
 		}
 	}
@@ -101,7 +121,7 @@ func RunPackagePush(opts PackagePushOptions) error {
 		return fmt.Errorf("%w for %s@%s: %s; rerun with --allow-permissions", ErrPackagePermissions, installed.Name, installed.Revision, strings.Join(grants, ", "))
 	}
 
-	preflight := func(generated map[string]map[string]string, state *diff.StateFile, adapters map[string]adapter.Adapter) error {
+	preflight := func(generated map[string][]adapter.GeneratedFile, state *diff.StateFile, adapters map[string]adapter.Adapter) error {
 		if err := rejectForeignPackageCollisions(pkg.Pivot, generated, state); err != nil {
 			return err
 		}
@@ -115,31 +135,32 @@ func RunPackagePush(opts PackagePushOptions) error {
 		}
 		return nil
 	}
-	postflight := func(generated map[string]map[string]string, state *diff.StateFile) error {
+	postflight := func(generated map[string][]adapter.GeneratedFile, state *diff.StateFile) error {
 		return nil
 	}
-	return runPushAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Force, opts.Adapters, store.StateDir(installed.Name), preflight, postflight, output, os.Stderr)
+	return runPushAt(filepath.Join(installed.Root, shenronpackage.PivotFileName), opts.Target, opts.Force, opts.Adapters, store.StateDir(installed.Name), format, preflight, postflight, output, os.Stderr)
 }
 
 // NewDiffCmd builds the top-level `diff` command.
 func NewDiffCmd(store func() *shenronpackage.Store) *cobra.Command {
-	var target string
+	var target, output string
 	cmd := &cobra.Command{
 		Use:          "diff <name>",
 		Short:        "Show differences for an installed configuration package",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return RunPackageDiff(PackageDiffOptions{Store: store(), Name: args[0], Target: target, Output: cmd.OutOrStdout()})
+			return RunPackageDiff(PackageDiffOptions{Store: store(), Name: args[0], Target: target, Format: output, Output: cmd.OutOrStdout()})
 		},
 	}
 	cmd.Flags().StringVar(&target, "target", "", "limit to a single CLI target (e.g. opencode)")
+	cmd.Flags().StringVar(&output, "output", "text", "output format: text or json")
 	return cmd
 }
 
 // NewPushCmd builds the top-level `push` command.
 func NewPushCmd(store func() *shenronpackage.Store) *cobra.Command {
-	var target string
+	var target, output string
 	var force, allowPermissions bool
 	cmd := &cobra.Command{
 		Use:          "push <name>",
@@ -147,10 +168,11 @@ func NewPushCmd(store func() *shenronpackage.Store) *cobra.Command {
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return RunPackagePush(PackagePushOptions{Store: store(), Name: args[0], Target: target, Force: force, AllowPermissions: allowPermissions, Output: cmd.OutOrStdout()})
+			return RunPackagePush(PackagePushOptions{Store: store(), Name: args[0], Target: target, Force: force, AllowPermissions: allowPermissions, Format: output, Output: cmd.OutOrStdout()})
 		},
 	}
 	cmd.Flags().StringVar(&target, "target", "", "limit to a single CLI target (e.g. opencode)")
+	cmd.Flags().StringVar(&output, "output", "text", "output format: text or json")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite manually edited package-owned native files")
 	cmd.Flags().BoolVar(&allowPermissions, "allow-permissions", false, "approve this package revision's declared permissions")
 	return cmd
@@ -299,16 +321,16 @@ func savePackageApproval(store *shenronpackage.Store, installed *shenronpackage.
 	return nil
 }
 
-func rejectForeignPackageCollisions(pf *pivot.PivotFile, generated map[string]map[string]string, state *diff.StateFile) error {
+func rejectForeignPackageCollisions(pf *pivot.PivotFile, generated map[string][]adapter.GeneratedFile, state *diff.StateFile) error {
 	for target, files := range generated {
-		for path := range files {
-			if target == "opencode" && filepath.Base(path) == "opencode.json" {
-				if err := rejectForeignOpenCodeCollisions(path, pf, state); err != nil {
+		for _, f := range files {
+			if target == "opencode" && filepath.Base(f.Path) == "opencode.json" {
+				if err := rejectForeignOpenCodeCollisions(f.Path, pf, state); err != nil {
 					return err
 				}
 				continue
 			}
-			if err := rejectForeignFileCollision(path, state); err != nil {
+			if err := rejectForeignFileCollision(f.Path, state); err != nil {
 				return err
 			}
 		}
@@ -358,10 +380,10 @@ func rejectForeignOpenCodeCollisions(path string, pf *pivot.PivotFile, state *di
 	return nil
 }
 
-func recordPackageOpenCodeOwnership(pf *pivot.PivotFile, files map[string]string, state *diff.StateFile) {
-	for path := range files {
-		if filepath.Base(path) == "opencode.json" {
-			state.SetManaged(path, packageOpenCodeManaged(pf))
+func recordPackageOpenCodeOwnership(pf *pivot.PivotFile, files []adapter.GeneratedFile, state *diff.StateFile) {
+	for _, f := range files {
+		if filepath.Base(f.Path) == "opencode.json" {
+			state.SetManaged(f.Path, packageOpenCodeManaged(pf))
 		}
 	}
 }

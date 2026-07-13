@@ -40,8 +40,8 @@ func TestGenerateOpenCode(t *testing.T) {
 	}
 
 	foundConfig := false
-	for path := range files {
-		if filepath.Base(path) == "opencode.json" {
+	for _, f := range files {
+		if filepath.Base(f.Path) == "opencode.json" {
 			foundConfig = true
 		}
 	}
