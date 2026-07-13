@@ -121,7 +121,24 @@ func NewRootCmd() *cobra.Command {
 		NewUpdateCmd(resolver),
 		NewDiffCmd(resolver),
 		NewPushCmd(resolver),
+		NewDoctorCmd(resolver),
 	)
+	return cmd
+}
+
+// NewDoctorCmd builds the top-level `doctor` command.
+func NewDoctorCmd(store func() *shenronpackage.Store) *cobra.Command {
+	var output string
+	cmd := &cobra.Command{
+		Use:          "doctor",
+		Short:        "Check tool paths, snapshot cache, state, and permission approvals",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return RunDoctor(DoctorOptions{Store: store(), Format: output, Output: cmd.OutOrStdout()})
+		},
+	}
+	cmd.Flags().StringVar(&output, "output", "text", "output format: text or json")
 	return cmd
 }
 

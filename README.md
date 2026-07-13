@@ -89,6 +89,7 @@ reports `No changes` for each synchronized target.
 | `shenron update <name>` | Validate and replace an installed snapshot from a new source or ref. |
 | `shenron diff <name>` | Show a package's native diff plus its permission grants and missing skills. |
 | `shenron push <name>` | Generate and atomically write a package's native files, then update its state. |
+| `shenron doctor` | Check tool paths, snapshot-cache integrity, sync state, and pending permission approvals. |
 
 Common flags:
 
