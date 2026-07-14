@@ -34,7 +34,7 @@ type PackageUpdateOptions struct {
 	Output io.Writer
 }
 
-// RunPackageInstall installs a local directory or a public HTTPS Git package.
+// RunPackageInstall installs a local directory or a remote (HTTPS or SSH) Git package.
 func RunPackageInstall(opts PackageInstallOptions) error {
 	store := packageStore(opts.Store)
 	installed, err := store.Install(opts.Source, opts.Ref)
@@ -165,14 +165,14 @@ func NewInstallCmd(store func() *shenronpackage.Store) *cobra.Command {
 	var ref string
 	cmd := &cobra.Command{
 		Use:          "install <source>",
-		Short:        "Install a local or public HTTPS Git package",
+		Short:        "Install a local, public HTTPS, or SSH Git package",
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return RunPackageInstall(PackageInstallOptions{Store: store(), Source: args[0], Ref: ref, Output: cmd.OutOrStdout()})
 		},
 	}
-	cmd.Flags().StringVar(&ref, "ref", "", "immutable Git tag or full commit SHA (required for HTTPS sources)")
+	cmd.Flags().StringVar(&ref, "ref", "", "immutable Git tag or full commit SHA (required for HTTPS and SSH sources)")
 	return cmd
 }
 
@@ -201,7 +201,7 @@ func NewUpdateCmd(store func() *shenronpackage.Store) *cobra.Command {
 			return RunPackageUpdate(PackageUpdateOptions{Store: store(), Name: args[0], Source: source, Ref: ref, Output: cmd.OutOrStdout()})
 		},
 	}
-	cmd.Flags().StringVar(&source, "source", "", "replacement local directory or public HTTPS Git source")
+	cmd.Flags().StringVar(&source, "source", "", "replacement local directory or remote (HTTPS or SSH) Git source")
 	cmd.Flags().StringVar(&ref, "ref", "", "immutable Git tag or full commit SHA")
 	return cmd
 }

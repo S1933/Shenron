@@ -287,17 +287,18 @@ func (s *Store) InstallLocal(source string) (*InstalledPackage, error) {
 	return installed, nil
 }
 
-// Install chooses a local-directory or public HTTPS Git installation based on
-// source. A ref is accepted only for Git sources.
+// Install chooses a local-directory or remote Git installation based on
+// source. Remote sources are public HTTPS URLs or SSH URLs (scp-like
+// git@host:path or ssh://). A ref is accepted only for Git sources.
 func (s *Store) Install(source, ref string) (*InstalledPackage, error) {
-	if isHTTPSURL(source) {
+	if isRemoteGitSource(source) {
 		return s.InstallGit(source, ref)
 	}
 	if isNonHTTPSRemote(source) {
-		return nil, fmt.Errorf("package Git source must be a public HTTPS URL")
+		return nil, fmt.Errorf("package Git source must be a public HTTPS or SSH URL")
 	}
 	if ref != "" {
-		return nil, fmt.Errorf("--ref is only supported for public HTTPS Git sources")
+		return nil, fmt.Errorf("--ref is only supported for remote Git sources")
 	}
 	return s.InstallLocal(source)
 }
@@ -411,24 +412,27 @@ func (s *Store) UpdateLocal(name, source string) (*InstalledPackage, error) {
 	})
 }
 
-// Update chooses a local-directory or public HTTPS Git update based on source.
+// Update chooses a local-directory or remote Git update based on source.
+// Remote sources are public HTTPS URLs or SSH URLs.
 func (s *Store) Update(name, source, ref string) (*InstalledPackage, error) {
-	if isHTTPSURL(source) {
+	if isRemoteGitSource(source) {
 		return s.UpdateGit(name, source, ref)
 	}
 	if isNonHTTPSRemote(source) {
-		return nil, fmt.Errorf("package Git source must be a public HTTPS URL")
+		return nil, fmt.Errorf("package Git source must be a public HTTPS or SSH URL")
 	}
 	if ref != "" {
-		return nil, fmt.Errorf("--ref is only supported for public HTTPS Git sources")
+		return nil, fmt.Errorf("--ref is only supported for remote Git sources")
 	}
 	return s.UpdateLocal(name, source)
 }
 
-// InstallGit installs a package from a public HTTPS Git repository. ref must
-// name a tag or a full commit SHA; branches and HEAD are never selected.
+// InstallGit installs a package from a public HTTPS or SSH Git repository. ref
+// must name a tag or a full commit SHA; branches and HEAD are never selected.
+// SSH sources authenticate through the caller's ssh-agent and verify host keys
+// against the local known_hosts file; no credentials are read from the URL.
 func (s *Store) InstallGit(source, ref string) (*InstalledPackage, error) {
-	if _, err := validateGitSource(source, ref); err != nil {
+	if err := validateGitSource(source, ref); err != nil {
 		return nil, err
 	}
 	unlock, err := s.lockIndex()
@@ -464,9 +468,9 @@ func (s *Store) InstallGit(source, ref string) (*InstalledPackage, error) {
 }
 
 // UpdateGit replaces an installed package with a newly fetched, validated
-// snapshot from a public HTTPS Git source.
+// snapshot from a public HTTPS or SSH Git source.
 func (s *Store) UpdateGit(name, source, ref string) (*InstalledPackage, error) {
-	if _, err := validateGitSource(source, ref); err != nil {
+	if err := validateGitSource(source, ref); err != nil {
 		return nil, err
 	}
 	return s.update(name, func() (*stagedSnapshot, error) {
@@ -581,34 +585,109 @@ func (s *Store) stageGitSnapshot(source, ref string) (*stagedSnapshot, error) {
 	return &stagedSnapshot{source: source, ref: ref, revision: revision.String(), root: root, tmp: tmp, pkg: pkg, digest: digest}, nil
 }
 
-var commitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+var (
+	commitSHA = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
+	// scpLikeURL matches the SSH scp-like syntax [user@]host:path where the
+	// host segment carries no slash, e.g. git@github.com:acme/pkg.git.
+	scpLikeURL = regexp.MustCompile(`^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+:.+$`)
+)
 
-func validateGitSource(source, ref string) (*url.URL, error) {
+func validateGitSource(source, ref string) error {
+	switch {
+	case isHTTPSURL(source):
+		return validateHTTPSSource(source, ref)
+	case isSSHURL(source):
+		return validateSSHSource(source, ref)
+	default:
+		return fmt.Errorf("package Git source must be a public HTTPS or SSH URL")
+	}
+}
+
+func validateHTTPSSource(source, ref string) error {
 	parsed, err := url.Parse(source)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, fmt.Errorf("package Git source must be a public HTTPS URL")
+		return fmt.Errorf("package Git source must be a public HTTPS or SSH URL")
 	}
 	if parsed.User != nil {
-		return nil, fmt.Errorf("package Git source must not include credentials")
+		return fmt.Errorf("package Git source must not include credentials")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, fmt.Errorf("package Git source must not include a query or fragment")
+		return fmt.Errorf("package Git source must not include a query or fragment")
 	}
-	lowerPath := strings.ToLower(parsed.Path)
+	if err := validateNotArchive(parsed.Path); err != nil {
+		return err
+	}
+	return validateImmutableRef(ref)
+}
+
+// validateSSHSource accepts scp-like (git@host:path) and ssh:// sources. The
+// login user in the source is not a credential; an embedded password is. Auth
+// is delegated to the caller's ssh-agent at clone time.
+func validateSSHSource(source, ref string) error {
+	if strings.HasPrefix(source, "ssh://") {
+		parsed, err := url.Parse(source)
+		if err != nil || parsed.Host == "" {
+			return fmt.Errorf("package Git source must be a public HTTPS or SSH URL")
+		}
+		if parsed.User != nil {
+			if _, hasPassword := parsed.User.Password(); hasPassword {
+				return fmt.Errorf("package Git source must not include credentials")
+			}
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("package Git source must not include a query or fragment")
+		}
+		if err := validateNotArchive(parsed.Path); err != nil {
+			return err
+		}
+		return validateImmutableRef(ref)
+	}
+	// scp-like: [user@]host:path — no password can be embedded in this form.
+	_, path, _ := strings.Cut(source, ":")
+	if err := validateNotArchive(path); err != nil {
+		return err
+	}
+	return validateImmutableRef(ref)
+}
+
+func validateNotArchive(path string) error {
+	lowerPath := strings.ToLower(path)
 	for _, suffix := range []string{".zip", ".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tar.xz"} {
 		if strings.HasSuffix(lowerPath, suffix) {
-			return nil, fmt.Errorf("package source must be a Git repository, not an archive")
+			return fmt.Errorf("package source must be a Git repository, not an archive")
 		}
 	}
+	return nil
+}
+
+func validateImmutableRef(ref string) error {
 	if ref == "" || strings.EqualFold(ref, "head") || strings.HasPrefix(ref, "refs/heads/") {
-		return nil, fmt.Errorf("package Git ref must be an immutable tag or full commit SHA")
+		return fmt.Errorf("package Git ref must be an immutable tag or full commit SHA")
 	}
-	return parsed, nil
+	return nil
 }
 
 func isHTTPSURL(source string) bool {
 	parsed, err := url.Parse(source)
 	return err == nil && parsed.Scheme == "https"
+}
+
+// isSSHURL reports whether source is an SSH Git source: either an ssh:// URL
+// or the scp-like [user@]host:path form.
+func isSSHURL(source string) bool {
+	if parsed, err := url.Parse(source); err == nil && parsed.Scheme == "ssh" {
+		return true
+	}
+	if strings.Contains(source, "://") {
+		return false
+	}
+	return scpLikeURL.MatchString(source)
+}
+
+// isRemoteGitSource reports whether source should be fetched over the network
+// as a Git repository rather than copied from a local directory.
+func isRemoteGitSource(source string) bool {
+	return isHTTPSURL(source) || isSSHURL(source)
 }
 
 func isNonHTTPSRemote(source string) bool {

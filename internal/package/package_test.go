@@ -573,11 +573,13 @@ func TestStoreInstallGitRejectsUnsafeSourcesAndMutableRefs(t *testing.T) {
 	tests := []struct {
 		name, source, ref, want string
 	}{
-		{"ssh", "git@github.com:acme/reviewers.git", "v1.2.3", "HTTPS"},
 		{"credentials", "https://token@example.com/acme/reviewers.git", "v1.2.3", "credentials"},
+		{"ssh-password", "ssh://git:secret@github.com/acme/reviewers.git", "v1.2.3", "credentials"},
 		{"archive", "https://example.com/reviewers.tar.gz", "v1.2.3", "Git repository"},
+		{"ssh-archive", "git@github.com:acme/reviewers.tar.gz", "v1.2.3", "Git repository"},
 		{"branch", "https://example.com/acme/reviewers.git", "refs/heads/main", "immutable"},
 		{"head", "https://example.com/acme/reviewers.git", "HEAD", "immutable"},
+		{"ssh-head", "git@github.com:acme/reviewers.git", "HEAD", "immutable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -591,9 +593,53 @@ func TestStoreInstallGitRejectsUnsafeSourcesAndMutableRefs(t *testing.T) {
 
 func TestStoreInstallRejectsNonHTTPSRemoteSources(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "cache"))
-	for _, source := range []string{"git@github.com:acme/reviewers.git", "ssh://github.com/acme/reviewers.git", "http://example.com/acme/reviewers.git"} {
-		if _, err := store.Install(source, ""); err == nil || !strings.Contains(err.Error(), "public HTTPS") {
-			t.Errorf("Install(%q) error = %v, want HTTPS source rejection", source, err)
+	for _, source := range []string{"http://example.com/acme/reviewers.git", "git://example.com/acme/reviewers.git", "ftp://example.com/acme/reviewers.git"} {
+		if _, err := store.Install(source, ""); err == nil || !strings.Contains(err.Error(), "public HTTPS or SSH") {
+			t.Errorf("Install(%q) error = %v, want HTTPS/SSH source rejection", source, err)
+		}
+	}
+}
+
+func TestGitSourceClassification(t *testing.T) {
+	tests := []struct {
+		source               string
+		https, ssh, nonHTTPS bool
+	}{
+		{"https://github.com/acme/pkg.git", true, false, false},
+		{"git@github.com:acme/pkg.git", false, true, true},
+		{"ssh://git@github.com/acme/pkg.git", false, true, true},
+		{"http://example.com/acme/pkg.git", false, false, true},
+		{"git://example.com/acme/pkg.git", false, false, true},
+		{"testdata/local-package", false, false, false},
+		{"/abs/path/to/package", false, false, false},
+		{"./relative/package", false, false, false},
+	}
+	for _, tt := range tests {
+		if got := isHTTPSURL(tt.source); got != tt.https {
+			t.Errorf("isHTTPSURL(%q) = %v, want %v", tt.source, got, tt.https)
+		}
+		if got := isSSHURL(tt.source); got != tt.ssh {
+			t.Errorf("isSSHURL(%q) = %v, want %v", tt.source, got, tt.ssh)
+		}
+		if got := isRemoteGitSource(tt.source); got != (tt.https || tt.ssh) {
+			t.Errorf("isRemoteGitSource(%q) = %v, want %v", tt.source, got, tt.https || tt.ssh)
+		}
+	}
+}
+
+func TestValidateGitSourceAcceptsSSH(t *testing.T) {
+	sources := []string{
+		"git@github.com:acme/reviewers.git",
+		"ssh://git@github.com/acme/reviewers.git",
+		"ssh://git@github.com:2222/acme/reviewers.git",
+	}
+	for _, source := range sources {
+		if err := validateGitSource(source, "v1.2.3"); err != nil {
+			t.Errorf("validateGitSource(%q, tag) = %v, want nil", source, err)
+		}
+		fullSHA := "0123456789abcdef0123456789abcdef01234567"
+		if err := validateGitSource(source, fullSHA); err != nil {
+			t.Errorf("validateGitSource(%q, sha) = %v, want nil", source, err)
 		}
 	}
 }

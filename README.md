@@ -84,7 +84,7 @@ reports `No changes` for each synchronized target.
 
 | Command | Behavior |
 |---|---|
-| `shenron install <source>` | Install a local directory or a public HTTPS Git package. |
+| `shenron install <source>` | Install a local directory or a remote Git package (public HTTPS, or SSH via `git@host:path` / `ssh://`). |
 | `shenron list` | List installed packages, ordered by name. |
 | `shenron update <name>` | Validate and replace an installed snapshot from a new source or ref. |
 | `shenron diff <name>` | Show a package's native diff plus its permission grants and missing skills. |
@@ -96,7 +96,10 @@ Common flags:
 
 - `--store <path>` (root, persistent) selects a custom package cache
   directory (default `~/.shenron/packages`).
-- `install --ref <tag-or-sha>` pins the Git revision for HTTPS sources.
+- `install --ref <tag-or-sha>` pins the Git revision for HTTPS and SSH sources.
+  SSH sources (`git@host:path` or `ssh://…`) authenticate through your
+  ssh-agent and verify host keys against `~/.ssh/known_hosts`; credentials are
+  never read from the URL.
 - `update --source <dir-or-url>` and `update --ref <tag-or-sha>` replace the
   installed package's source and revision.
 - `diff --target <name>` and `push --target <name>` select `claude-code`,
@@ -277,8 +280,12 @@ matching `^[a-z][a-z0-9-]*$`, a strict semver `version`, a non-empty
 # Local directory
 ./shenron install ./my-package
 
-# Public Git repository (HTTPS only, immutable tag or full commit SHA)
+# Public Git repository over HTTPS (immutable tag or full commit SHA)
 ./shenron install https://github.com/acme/reviewers.git --ref 1.2.0
+
+# Private/public repository over SSH (uses your ssh-agent and known_hosts)
+./shenron install git@github.com:acme/reviewers.git --ref 1.2.0
+./shenron install ssh://git@github.com/acme/reviewers.git --ref 1.2.0
 ```
 
 The first install copies the source into a content-addressed snapshot under
@@ -373,9 +380,11 @@ use `push --force` deliberately.
 - Skill-name validation checks kebab-case syntax, not local filesystem
   availability.
 - OpenCode JSON is structurally preserved, not guaranteed byte-identical.
-- Package installs accept only local directories or public HTTPS Git
-  repositories, and HTTPS sources require an immutable tag or full commit
-  SHA. Branches, `HEAD`, SSH, and archive URLs are refused.
+- Package installs accept local directories, public HTTPS Git repositories, or
+  SSH Git repositories (`git@host:path` and `ssh://`). Remote sources require an
+  immutable tag or full commit SHA; branches, `HEAD`, embedded credentials, and
+  archive URLs are refused. SSH auth is delegated to the caller's ssh-agent and
+  host keys are verified against `known_hosts`.
 
 ## Architecture for contributors
 
