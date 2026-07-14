@@ -105,9 +105,11 @@ Common flags:
 - `push --allow-permissions` approves the package revision's declared
   permission grants; the approval is bound to the installed revision and its
   permission digest.
-- `diff --output json` and `push --output json` emit a machine-readable
-  report on stdout (files with their adapter, status, and resource id, plus
-  any orphaned paths); human diagnostics stay on stderr.
+- `--output json` (on `diff`, `push`, `explain`, and `doctor`) emits a
+  machine-readable report on stdout — for `diff`/`push`, files with their
+  adapter, status, and resource id plus any orphaned paths; for `explain`, the
+  translated files; for `doctor`, the health checks. Human diagnostics stay on
+  stderr.
 
 ## Pivot file
 
@@ -330,7 +332,13 @@ The sync pipeline is:
 2. Generate each target's files in memory.
 3. Merge OpenCode agent and command fragments into the existing JSON.
 4. Compare generated content with disk and `.shenron-state.json`.
-5. Write changed files atomically and record their hashes.
+5. Stage changed files, then commit the batch through a journalled
+   transaction and record their hashes.
+
+Each file is written atomically, and the batch is guarded by a journal
+(`.shenron-journal.json`): the staged renames are recorded before any go live,
+so a crash mid-commit is repaired on the next run by replaying the pending
+renames (roll-forward), never leaving a push half-applied.
 
 ### OpenCode merge policy
 
@@ -374,7 +382,7 @@ use `push --force` deliberately.
 ```text
 cmd/shenron/       Cobra entry point
 internal/
-  cli/                 install, list, update, diff, push commands, registry, orchestration
+  cli/                 install, list, update, diff, push, doctor, explain commands, registry, orchestration
   pivot/               YAML schema, discovery, parsing, validation
   package/             shenron-package.yaml manifest, immutable snapshots, Git and local install
   adapter/
@@ -387,22 +395,31 @@ testdata/              end-to-end fixtures
 docs/                  PRD, plans, and skill-binding matrix
 ```
 
-The core consumes the `adapter.Adapter` interface:
+The core consumes the `adapter.Adapter` interface. `Generate` is a single,
+side-effect-free pass over the whole pivot: it returns every file plus any
+nested-config fragments, so one adapter instance is reusable and safe under
+concurrency.
 
 ```go
 type Adapter interface {
     Name() string
     ValidateAgent(pivot.AgentDefinition) error
-    GenerateAgent(pivot.AgentDefinition) (map[string]string, error)
-    GenerateCommand(pivot.CommandDefinition) (map[string]string, error)
+    Generate(*pivot.PivotFile) (GenerationResult, error)
     TargetPaths() []string
-    MergeFile(path string, existing []byte, fragments map[string]any) ([]byte, error)
 }
 ```
 
-OpenCode additionally exposes an internal fragment accumulator so orchestration
-can merge all generated agent and command fragments into one `opencode.json`.
-Claude Code generates independent files and returns no merged file.
+Optional behaviors are expressed as capability interfaces (`capabilities.go`)
+that the sync runtime probes for with type assertions:
+
+- `MergingAdapter` (`MergeFile`, `ConfigPath`) folds accumulated fragments into
+  a shared config file. OpenCode implements it to merge all agent and command
+  fragments into one `opencode.json`; Claude Code and Codex generate
+  independent files and do not.
+- `ManagedPruner` removes leaves shenron previously managed but the current
+  pivot no longer generates, preserving entries it never owned.
+- `PivotDirectoryAware` receives the pivot directory to resolve relative
+  `promptFile` references during generation.
 
 To add a target:
 
@@ -426,7 +443,7 @@ The test suite contains:
 - adapter mapping and golden-file tests;
 - ordered OpenCode merge and preservation tests;
 - CLI bootstrap, diff, push, force, and orphan-scope tests;
-- cobra-driven surface tests for the five top-level commands
+- cobra-driven surface tests for the seven top-level commands
   (`commands_test.go`);
 - install, list, update, diff, push, permissions, skills, and
   foreign-collision tests against the package store;
